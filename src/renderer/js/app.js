@@ -125,6 +125,8 @@ class Legion {
       this.log('starting render surface', 'dim');
       this.stage = new FaceStage(document.getElementById('stage'), {
         quality: this.config.visual?.quality || 'high',
+        particleScale: this.config.visual?.particleScale ?? 1,
+        themeIntensity: this.config.visual?.themeIntensity ?? 1,
         reducedMotion: !!this.config.visual?.reducedMotion,
         theme: this.theme,
         adaptive: this.config.visual?.adaptiveQuality !== false,
@@ -866,9 +868,13 @@ class Legion {
     if (c?.ui?.theme && c.ui.theme !== this.theme) { this.theme = c.ui.theme; this.applyTheme(this.theme); }
     if (c?.voice?.micDeviceId) this.micDeviceId = c.voice.micDeviceId;
     this.audio.setSpeakingGain(c?.voice?.volume ?? 100);
+    this.stage?.setQuality(c?.visual?.quality || 'high');
+    this.stage?.setParticleScale(c?.visual?.particleScale ?? 1);
+    this.stage?.setThemeIntensity(c?.visual?.themeIntensity ?? 1);
     this.stage?.setAdaptive(c?.visual?.adaptiveQuality !== false);
     this.stage?.setReducedMotion(!!c?.visual?.reducedMotion);
     this.stage?.setScanlines(c?.visual?.showScanlines !== false);
+    this.stage?.setScanlineAlpha?.(c?.visual?.scanlineAlpha ?? 1);
   }
 
   async refreshMemory() {
