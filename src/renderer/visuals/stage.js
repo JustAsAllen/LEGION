@@ -240,11 +240,16 @@ export class FaceStage {
 
   setScanlineAlpha(v) {
     this.scanlineAlpha = Math.max(0, Math.min(1, Number(v) || 0));
+    document.documentElement.style.setProperty('--scanline-alpha', String(this.scanlineAlpha));
   }
 
   setAccent(hex) {
-    this.accent = new Color(hex || '#28e0c8');
-    if (this.uniforms && this.uniforms.uAccent) this.uniforms.uAccent.value.copy(this.accent);
+    const color = new THREE.Color(hex || '#28e0c8');
+    this.accent = color;
+    if (this.field?.uniforms?.uColorAccent) {
+      this.field.uniforms.uColorAccent.value.copy(color);
+    }
+    this.accentTarget = color;
   }
 
   _applyQuality() {
