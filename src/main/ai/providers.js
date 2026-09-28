@@ -2,18 +2,6 @@
 
 const { ToolError } = require('../tools/registry');
 
-/**
- * Provider adapter contract
- * -------------------------
- *   id            string
- *   needsKey      boolean
- *   chat({ system, messages, tools, temperature, maxTokens, signal })
- *        -> { text, toolCalls: [{id, name, arguments}], usage, raw }
- *
- * Every provider speaks the same shape, so the engine, memory and tool router
- * never learn provider-specific details.
- */
-
 class Provider {
   constructor(cfg) { this.cfg = cfg; }
   get id() { throw new Error('not implemented'); }
@@ -29,11 +17,50 @@ async function asHttpError(res, provider) {
   return err;
 }
 
+function anthropicMessages(messages) {
+  return messages.map((m) => {
+    if (m.role === 'tool') {
+      return {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: m.toolCallId, content: m.content }]
+      };
+    }
+    if (m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length) {
+      const content = [];
+      if (m.content) content.push({ type: 'text', text: m.content });
+      for (const call of m.toolCalls) {
+        content.push({ type: 'tool_use', id: call.id, name: call.name, input: call.arguments || {} });
+      }
+      return { role: 'assistant', content };
+    }
+    return { role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content };
+  });
+}
+
+function openAiMessages(messages) {
+  return messages.map((m) => {
+    if (m.role === 'tool') {
+      return { role: 'tool', tool_call_id: m.toolCallId, content: m.content };
+    }
+    if (m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length) {
+      return {
+        role: 'assistant',
+        content: m.content || null,
+        tool_calls: m.toolCalls.map((call) => ({
+          id: call.id,
+          type: 'function',
+          function: { name: call.name, arguments: JSON.stringify(call.arguments || {}) }
+        }))
+      };
+    }
+    return { role: m.role, content: m.content };
+  });
+}
+
 class AnthropicProvider extends Provider {
   constructor(cfg, key) { super(cfg); this.key = key; }
   get id() { return 'anthropic'; }
   get needsKey() { return true; }
-
   get defaultModel() { return 'claude-sonnet-4-5'; }
 
   async chat({ system, messages, tools, temperature, maxTokens, signal }) {
@@ -43,24 +70,15 @@ class AnthropicProvider extends Provider {
       max_tokens: maxTokens || 900,
       temperature: temperature === undefined ? 0.3 : temperature,
       system,
-      messages: messages.map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
+      messages: anthropicMessages(messages)
     };
     if (tools && tools.length) {
-      body.tools = tools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.parameters
-      }));
+      body.tools = tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
     }
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      signal,
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': this.key,
-        'anthropic-version': '2023-06-01'
-      },
+      method: 'POST', signal,
+      headers: { 'content-type': 'application/json', 'x-api-key': this.key, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify(body)
     });
     if (!res.ok) throw await asHttpError(res, 'Anthropic');
@@ -72,12 +90,7 @@ class AnthropicProvider extends Provider {
       if (block.type === 'text') textParts.push(block.text);
       else if (block.type === 'tool_use') toolCalls.push({ id: block.id, name: block.name, arguments: block.input || {} });
     }
-    return {
-      text: textParts.join('\n').trim(),
-      toolCalls,
-      usage: data.usage || null,
-      model: data.model || model
-    };
+    return { text: textParts.join('\n').trim(), toolCalls, usage: data.usage || null, model: data.model || model };
   }
 }
 
@@ -85,15 +98,12 @@ class OpenAIProvider extends Provider {
   constructor(cfg, key) { super(cfg); this.key = key; }
   get id() { return 'openai'; }
   get needsKey() { return true; }
-
   get defaultModel() { return 'gpt-4o-mini'; }
   get base() { return (this.cfg.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, ''); }
 
   async chat({ system, messages, tools, temperature, maxTokens, signal }) {
     const model = this.cfg.model || this.defaultModel;
-    const wire = [{ role: 'system', content: system }].concat(
-      messages.map((m) => ({ role: m.role, content: m.content }))
-    );
+    const wire = [{ role: 'system', content: system }].concat(openAiMessages(messages));
     const body = {
       model,
       messages: wire,
@@ -106,8 +116,7 @@ class OpenAIProvider extends Provider {
     }
 
     const res = await fetch(`${this.base}/chat/completions`, {
-      method: 'POST',
-      signal,
+      method: 'POST', signal,
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.key}` },
       body: JSON.stringify(body)
     });
@@ -142,13 +151,9 @@ class OllamaProvider extends Provider {
 
   async chat({ system, messages, tools, temperature, maxTokens, signal }) {
     const model = this.cfg.model || this.defaultModel;
-    const wire = [{ role: 'system', content: system }].concat(
-      messages.map((m) => ({ role: m.role, content: m.content }))
-    );
+    const wire = [{ role: 'system', content: system }].concat(openAiMessages(messages));
     const body = {
-      model,
-      messages: wire,
-      stream: false,
+      model, messages: wire, stream: false,
       options: { temperature: temperature === undefined ? 0.3 : temperature, num_predict: maxTokens || 900 }
     };
     if (tools && tools.length) {
@@ -174,9 +179,7 @@ class NullProvider extends Provider {
   get id() { return 'none'; }
   get needsKey() { return false; }
   get unavailable() { return true; }
-  async chat() {
-    throw new ToolError('AI connection unavailable. Choose a provider in Settings.', 'E_NO_PROVIDER');
-  }
+  async chat() { throw new ToolError('AI connection unavailable. Choose a provider in Settings.', 'E_NO_PROVIDER'); }
 }
 
 function safeParse(s) {
