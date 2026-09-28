@@ -348,6 +348,7 @@ export function settingsPanel(host, app) {
         <span>Input device</span>
         <select id="set-mic"><option value="default">System default</option></select>
       </label>
+      <p class="hint" id="set-mic-scope" style="margin:2px 0 0">This device drives the level meter.</p>
       <div class="row wrap">
         <button class="btn sm ghost" id="set-test-mic">Test microphone</button>
         <span class="fr-hint" id="set-mic-hint">Not tested</span>
@@ -365,7 +366,15 @@ export function settingsPanel(host, app) {
         <span class="sw"></span>
         <span class="t-body">
           <span class="t-label">Require push to talk</span>
-          <span class="t-hint">When on, LEGION only listens while you hold the key. Turn this off for hands-free listening after the wake word.</span>
+          <span class="t-hint">When on, LEGION only listens while you hold the key. Turn this off for continuous listening.</span>
+        </span>
+      </label>
+      <label class="toggle" id="set-continuous-row" hidden>
+        <input type="checkbox" id="set-continuous" />
+        <span class="sw"></span>
+        <span class="t-body">
+          <span class="t-label">Continuous conversation</span>
+          <span class="t-hint">Keeps the microphone open and listens again after each reply, so you can talk back and forth without touching the keyboard. It only turns on when push to talk is off.</span>
         </span>
       </label>
     </div>
@@ -490,6 +499,11 @@ export function settingsPanel(host, app) {
     $('#set-vol-val').textContent = String(voice.volume ?? 100);
     $('#set-mic-autostart').checked = !!c.app?.autoListenOnLaunch;
     $('#set-push-to-talk').checked = voice.pushToTalk !== false;
+    // Continuous mode is only meaningful when push to talk is off, so its row
+    // appears once that toggle is cleared. Both are written to config so the
+    // pair can never disagree.
+    $('#set-continuous-row').hidden = voice.pushToTalk !== false;
+    $('#set-continuous').checked = !!voice.continuous;
     const micSel = $('#set-mic');
     if (!micSel.dataset.loaded) {
       micSel.innerHTML = '<option value="default">System default</option>';
@@ -606,8 +620,45 @@ export function settingsPanel(host, app) {
     }
   });
 
+  // The dictation engine has no capture-device API, so the choice here only
+  // reaches the analyser. Say so rather than implying the recogniser follows.
+  (async () => {
+    const note = $('#set-mic-scope');
+    let caps = null;
+    try { caps = await app.voiceCaps(); } catch (_) { /* keep the default note */ }
+    if (caps && caps.selectableCaptureDevice === false) {
+      note.textContent = 'This device drives the level meter only. Dictation uses the Windows default input, because the speech engine cannot be pointed at a chosen microphone.';
+    } else if (caps && caps.selectableCaptureDevice) {
+      note.textContent = 'This device drives the level meter and dictation.';
+    } else {
+      note.textContent = 'This device drives the level meter.';
+    }
+  })();
+
   $('#set-mic-autostart').addEventListener('change', (e) => save({ app: { autoListenOnLaunch: e.target.checked } }));
-  $('#set-push-to-talk').addEventListener('change', (e) => save({ voice: { pushToTalk: e.target.checked } }));
+  $('#set-push-to-talk').addEventListener('change', (e) => {
+    const on = e.target.checked;
+    // Re-enabling push to talk turns continuous mode off in the same write, so
+    // the two settings cannot end up contradicting each other.
+    save({ voice: on ? { pushToTalk: true, continuous: false } : { pushToTalk: false } });
+    $('#set-continuous-row').hidden = on;
+    if (on) $('#set-continuous').checked = false;
+    // Config alone is not enough: the live session has to drop continuous mode
+    // and close the microphone the mode was holding open.
+    if (on) app.setContinuousMode(false);
+  });
+
+  $('#set-continuous').addEventListener('change', (e) => {
+    const on = e.target.checked;
+    save({ voice: { continuous: on, pushToTalk: !on } });
+    if (on) {
+      $('#set-push-to-talk').checked = false;
+      $('#set-continuous-row').hidden = false;
+      app.setContinuousMode(true);
+    } else {
+      app.setContinuousMode(false);
+    }
+  });
 
   $('#set-quality').addEventListener('change', async (e) => {
     const q = e.target.value;

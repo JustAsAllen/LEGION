@@ -97,6 +97,28 @@ function stopSentinel() {
 function cleanup(file) { try { if (file && fs.existsSync(file)) fs.unlinkSync(file); } catch (_) { /* ignore */ } }
 
 /**
+ * Remove recogniser scripts and sentinels left behind by an earlier run.
+ * A hard kill skips the callback that would normally unlink them, and these
+ * files contain a script path and a limit, so they should not pile up in temp.
+ */
+function sweepOrphans(maxAgeMs = 60 * 60 * 1000) {
+  let removed = 0;
+  try {
+    const dir = os.tmpdir();
+    const cutoff = Date.now() - maxAgeMs;
+    for (const name of fs.readdirSync(dir)) {
+      if (!/^legion-stt-\d+-[a-z0-9]+\.(ps1|flag)$/.test(name)) continue;
+      const full = path.join(dir, name);
+      try {
+        const st = fs.statSync(full);
+        if (st.mtimeMs < cutoff) { fs.unlinkSync(full); removed++; }
+      } catch (_) { /* raced with another run; fine */ }
+    }
+  } catch (_) { /* temp not listable; nothing to sweep */ }
+  return removed;
+}
+
+/**
  * Begin capture. Returns immediately; the promise settles when recognition
  * ends (silence, sentinel, or the time limit).
  */
@@ -106,6 +128,8 @@ function listen(options) {
     return { stop() {}, promise: Promise.resolve({ ok: false, error: { code: 'E_STT_PLATFORM', message: 'Local speech recognition is only available on Windows.' } }) };
   }
   stopActive();
+  // Cheap, and only reaps debris from an earlier hard kill.
+  sweepOrphans();
 
   const stopFile = stopSentinel();
   const maxSeconds = Math.max(1.5, Math.min(60, Number(opts.maxSeconds) || 14));
@@ -210,6 +234,8 @@ function stopActive() {
 
 function isListening() { return !!active; }
 
+function sweepTemp(maxAgeMs) { return sweepOrphans(maxAgeMs); }
+
 /** Report which recogniser is actually in use, and what it can and cannot do. */
 function capabilities() {
   return {
@@ -225,4 +251,4 @@ function capabilities() {
   };
 }
 
-module.exports = { listen, stopActive, isListening, capabilities };
+module.exports = { listen, stopActive, isListening, capabilities, sweepTemp };

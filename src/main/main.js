@@ -437,16 +437,21 @@ function registerIpc() {
     const o = opts || {};
     setState('LISTENING');
     try {
-      const res = await stt.listen({ maxSeconds: o.maxSeconds || 14 });
+      // stt.listen() returns { stop(), promise }; the result lives on .promise.
+      // Awaiting the wrapper itself resolved to the wrapper, so res.ok was
+      // always undefined and every capture reported "Voice recognition failed".
+      const session = stt.listen({ maxSeconds: o.maxSeconds || 14 });
+      const res = await session.promise;
+      const err = res.error || { code: 'E_STT', message: 'Voice recognition failed.' };
       if (res.stopped) {
         // A released push-to-talk is not a failure. Return to idle quietly
         // rather than showing the user an error for their own action.
         setState('IDLE');
-        return { ok: false, stopped: true, error: res.error };
+        return { ok: false, stopped: true, error: err };
       }
       if (!res.ok) {
-        setState('ERROR', { message: res.error.message, code: res.error.code, at: Date.now() });
-        return { ok: false, error: res.error };
+        setState('ERROR', { message: err.message, code: err.code, at: Date.now() });
+        return { ok: false, error: err };
       }
       return { ok: true, transcript: res.transcript };
     } catch (err) {

@@ -49,6 +49,9 @@ class Legion {
     this.pttActive = false;
     this.micDeviceId = 'default';
     this.pttPromise = null;
+    // The voice surface is held on the instance so a check can substitute it.
+    // contextBridge freezes the object on window, so it cannot be patched there.
+    this.apiVoice = api.voice;
     this.currentPanel = null;
     this.panelApi = null;
     this.theme = 'legion-dark';
@@ -110,6 +113,9 @@ class Legion {
       this.config = cfgRes.settings;
       this.secrets = cfgRes.secret || {};
       this.micDeviceId = this.config.voice?.micDeviceId || 'default';
+    // Continuous mode is mutually exclusive with push to talk; the settings UI
+    // always writes the pair together, so trust pushToTalk when it disagrees.
+    this.continuous = this.config.voice?.continuous === true && this.config.voice?.pushToTalk === false;
       this.audio.setSpeakingGain(this.config.voice?.volume ?? 100);
       this.theme = this.config.ui?.theme || 'legion-dark';
       this.applyTheme(this.theme, true);
@@ -528,45 +534,23 @@ class Legion {
 
   pushToTalkStart() {
     if (this.pttActive || this.busy) return;
-    this.pttActive = true;
-    this.#setChipMic(true);
-    this.store.setCaption('Listening…', true);
-
-    this.audio.startMic(this.micDeviceId)
-      .then(() => {
-        this.store.setState('LISTENING');
-        return api.voice.listen({ maxSeconds: 20 });
-      })
-      .then((res) => {
-        this.#releaseMic();
-        if (!res || !res.ok) {
-          this.store.setCaption('', false);
-          // The user released the key, so there is nothing to report. Only a
-          // genuine failure should raise an error state and a toast.
-          if (res?.stopped) { this.store.setState('IDLE'); return; }
-          const msg = res?.error?.message || 'Voice recognition failed.';
-          this.store.setState('ERROR', msg);
-          this.toast('error', 'Could not hear you', msg);
-          return;
-        }
-        this.store.setCaption(res.transcript, false);
-        this.sendText(res.transcript);
-      })
-      .catch((err) => {
-        this.#releaseMic();
-        this.store.setCaption('', false);
-        this.store.setState('ERROR', err.message);
-        this.toast('error', 'Voice input failed', err.message);
-      });
+    // In continuous mode the mic is already open and a turn is already
+    // scheduled, so holding the key has nothing to add.
+    if (this.continuous) return;
+    this.#listenOnce({ continuous: false });
   }
 
   pushToTalkEnd() {
     if (!this.pttActive) return;
-    api.voice.listenStop().catch(() => {});
+    // A continuous turn is self-terminating; releasing the key must not abort
+    // the next listen, or the mode would stall whenever the user touched Space.
+    if (this.continuous && !this._pushingToTalk) return;
+    this.apiVoice.listenStop().catch(() => {});
   }
 
   #releaseMic() {
     this.pttActive = false;
+    this._pushingToTalk = false;
     this.#setChipMic(false);
   }
 
@@ -612,6 +596,7 @@ class Legion {
       this.store.setStreaming('');
       this.store.setCaption(reply, false);
       await this.speak(reply);
+      this.#rearmContinuous();
     } catch (err) {
       this.store.setStreaming('');
       this.store.setState('ERROR', err.message);
@@ -619,7 +604,110 @@ class Legion {
     } finally {
       this.busy = false;
       await this.refreshMemory();
+      this.#rearmContinuous();
     }
+  }
+
+  /**
+   * Continuous conversation: once the reply has finished speaking, wait for the
+   * room to go quiet, then listen again. The guard delay exists because a mic
+   * left open hears the TTS output as well; without it the assistant would
+   * transcribe its own voice. The end-of-speech silence break in the recogniser
+   * supplies the pause, and a real user pause is longer than this.
+   */
+  #rearmContinuous() {
+    if (!this.continuous || this.busy || this.pttActive) return;
+    clearTimeout(this._continuousTimer);
+    this._continuousTimer = setTimeout(() => {
+      if (this.continuous && !this.busy && !this.pttActive) this.#listenOnce({ continuous: true });
+    }, 900);
+  }
+
+  setContinuousMode(on) {
+    this.continuous = !!on;
+    if (this.continuous) {
+      // Keeping the microphone open is the whole point, and it is only reachable
+      // once the user has explicitly chosen this mode.
+      this.audio.startMic(this.micDeviceId).catch((err) => {
+        this.continuous = false;
+        this.store.setState('ERROR', err.message);
+        this.toast('error', 'Microphone unavailable', err.message);
+      });
+      this.#setChipMic(true);
+      this.#rearmContinuous();
+    } else {
+      clearTimeout(this._continuousTimer);
+      // A capture may be in flight right now. Stop the recogniser, otherwise
+      // the microphone stays open and the state machine stays in LISTENING
+      // with nothing left to drive it back to idle.
+      if (this.pttActive) {
+        this._pushingToTalk = true;
+        this.apiVoice.listenStop().catch(() => {});
+        this.#releaseMic();
+      }
+      this.audio.stopMic();
+      this.#setChipMic(false);
+      if (this.store.state === 'LISTENING' || this.store.state === 'ERROR') this.store.setState('IDLE');
+    }
+  }
+
+  /** One capture cycle, shared by push to talk and continuous mode. */
+  #listenOnce({ continuous = false } = {}) {
+    if (this.pttActive || this.busy) return;
+    this.pttActive = true;
+    this.#setChipMic(true);
+    this.store.setCaption('Listening…', true);
+
+    // Marks a turn the user is holding the key for, so releasing Space stops
+    // the capture. A continuous turn is never key-driven and ends on its own.
+    this._pushingToTalk = !continuous;
+
+    const stopAfterSpeech = () => { if (continuous) { this.pttActive = false; this.#setChipMic(true); } else { this.#releaseMic(); } };
+
+    this.audio.startMic(this.micDeviceId)
+      .then(() => {
+        this.store.setState('LISTENING');
+        return this.apiVoice.listen({ maxSeconds: continuous ? 12 : 20 });
+      })
+      .then((res) => {
+        // Continuous mode may have been switched off while this capture was in
+        // flight. The user asked to stop, so discard the result rather than
+        // sending a stale transcript to the provider behind their back.
+        if (continuous && !this.continuous) { this.store.setCaption('', false); return; }
+        stopAfterSpeech();
+        if (!res || !res.ok) {
+          this.store.setCaption('', false);
+          if (res?.stopped) {
+            // A released push to talk. Return quietly unless we are in
+            // continuous mode, where the next turn is already scheduled.
+            if (!continuous) this.store.setState('IDLE');
+            this.#rearmContinuous();
+            return;
+          }
+          const code = res?.error?.code;
+          // In continuous mode the microphone is open, so most turns are
+          // silence. Raising an error for an empty room would be noise, and
+          // the toast would repeat every cycle.
+          if (continuous && code === 'E_STT_EMPTY') {
+            if (this.store.state === 'LISTENING') this.store.setState('IDLE');
+            this.#rearmContinuous();
+            return;
+          }
+          const msg = res?.error?.message || 'Voice recognition failed.';
+          this.store.setState('ERROR', msg);
+          this.toast('error', 'Could not hear you', msg);
+          return;
+        }
+        this.store.setCaption(res.transcript, false);
+        this.sendText(res.transcript);
+      })
+      .catch((err) => {
+        if (continuous && !this.continuous) { this.store.setCaption('', false); return; }
+        stopAfterSpeech();
+        this.store.setCaption('', false);
+        this.store.setState('ERROR', err.message);
+        this.toast('error', 'Voice input failed', err.message);
+      });
   }
 
   /**
@@ -841,6 +929,22 @@ class Legion {
   }
 
   async listMicDevices() { return this.audio.listInputs(); }
+
+  /** What the recogniser can actually do, for honest UI copy. */
+  async voiceCaps() {
+    if (this._voiceCaps) return this._voiceCaps;
+    try {
+      this._voiceCaps = await api.voice.capabilities();
+    } catch (_) {
+      this._voiceCaps = null;
+    }
+    return this._voiceCaps;
+  }
+
+  async setVoiceConfig(patch) {
+    this.config = { ...(this.config || {}), voice: { ...(this.config?.voice || {}), ...patch } };
+    await api.config.set({ voice: patch });
+  }
 
   async forget(id) {
     try { await api.memory.forget(id); await this.refreshMemory(); return { ok: true }; }

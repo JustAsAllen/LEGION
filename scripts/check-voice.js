@@ -204,6 +204,26 @@ $engine.Dispose()
     bad('a released capture reports stopped, not a timeout', `${stopped.error && stopped.error.code} ${stopped.error && stopped.error.message}`);
   }
 
+  /* ---- 5. the handler must await .promise, not the session wrapper ---- */
+  // stt.listen() resolves to { stop(), promise }. Awaiting the wrapper made
+  // res.ok undefined on every capture, so main.js reported a failure for a
+  // recogniser that had actually returned a transcript.
+  const wrapped = await stt.listen({ maxSeconds: 4 });
+  if (wrapped && typeof wrapped.stop === 'function' && wrapped.promise && typeof wrapped.promise.then === 'function') {
+    ok('listen() exposes the result on .promise', 'wrapper carries stop() and a real promise');
+  } else {
+    bad('listen() exposes the result on .promise', `shape: ${Object.keys(wrapped || {}).join(',')}`);
+  }
+  stt.stopActive();
+  await wrapped.promise;
+
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'main.js'), 'utf8');
+  if (/const\s+res\s*=\s*await\s+session\.promise/.test(mainSrc)) {
+    ok('voice:listen awaits session.promise, not the wrapper', 'the result is read from the right field');
+  } else {
+    bad('voice:listen awaits session.promise, not the wrapper', 'main.js awaits the wrapper object again');
+  }
+
   if (stt.isListening()) bad('no recogniser left running after stop', 'stt.isListening() is still true');
   else ok('no recogniser left running after stop', 'isListening() false');
 })().then(() => {

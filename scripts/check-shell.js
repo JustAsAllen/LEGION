@@ -411,6 +411,131 @@ async function main() {
     }, 12000, 'toasts to auto-dismiss').catch(() => false);
     check('toasts auto-dismiss', !!toastsGone, toastsGone ? 'cleared' : 'still showing');
 
+    /* ---- 8. voice settings: continuous + mic-scope honesty ---- */
+    // Start from a known voice config so a previous run cannot leave the
+    // session in continuous mode and make this run order-dependent.
+    await cdp.eval(`(async () => {
+      const a = window.legionApp;
+      a.setContinuousMode(false);
+      await a.setVoiceConfig({ pushToTalk: true, continuous: false });
+      a.togglePanel('settings');
+      return true;
+    })()`);
+    await sleep(1100);
+
+    const vcfg = await cdp.eval(`(async () => {
+      const a = window.legionApp;
+      const row = document.getElementById('set-continuous-row');
+      const ptt = document.getElementById('set-push-to-talk');
+      const cont = document.getElementById('set-continuous');
+      const before = {
+        ptt: ptt.checked, cont: cont.checked,
+        rowHidden: row.hidden,
+        continuous: !!a.continuous,
+        micScope: document.getElementById('set-mic-scope').textContent
+      };
+      ptt.checked = false; ptt.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 500));
+      const afterPtt = { ptt: ptt.checked, rowHidden: row.hidden };
+      cont.checked = true; cont.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 1400));
+      const afterCont = {
+        ptt: ptt.checked, cont: cont.checked,
+        continuous: !!a.continuous,
+        micActive: !!a.audio.micActive
+      };
+      ptt.checked = true; ptt.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 900));
+      const restored = {
+        ptt: ptt.checked, cont: cont.checked, rowHidden: row.hidden,
+        continuous: !!a.continuous, micActive: !!a.audio.micActive
+      };
+      return { before, afterPtt, afterCont, restored };
+    })()`);
+
+    // The mic-scope notice must name the real limitation, not imply the
+    // recogniser follows the selector.
+    check('mic notice admits dictation ignores the selector',
+      /dictation uses the Windows default input/i.test(vcfg.before.micScope),
+      vcfg.before.micScope ? vcfg.before.micScope.slice(0, 70) : 'notice is empty');
+
+    check('continuous row is hidden while push to talk is on',
+      vcfg.before.rowHidden === true && vcfg.before.continuous === false,
+      `rowHidden=${vcfg.before.rowHidden} continuous=${vcfg.before.continuous}`);
+
+    check('clearing push to talk reveals the continuous row',
+      vcfg.afterPtt.rowHidden === false, `rowHidden=${vcfg.afterPtt.rowHidden}`);
+
+    check('enabling continuous mode opens the microphone',
+      vcfg.afterCont.continuous === true && vcfg.afterCont.micActive === true,
+      `continuous=${vcfg.afterCont.continuous} micActive=${vcfg.afterCont.micActive}`);
+
+    // Continuous mode schedules a capture on a timer, so assert the rearm and
+    // the silence handling by driving the recogniser through the app's own
+    // result path. The live microphone and the real recogniser are covered by
+    // check-voice.js; a live mic here would transcribe the room and send it to
+    // the provider part way through the tour.
+    const noisy = await cdp.eval(`(async () => {
+      const a = window.legionApp;
+      const seen = [];
+      const unhook = a.on('state', () => seen.push(a.store.state));
+      const bridge = window.legion;
+      if (!bridge || !bridge.voice) return { error: 'preload voice bridge not reachable' };
+      let stubbed = false;
+      const realListen = bridge.voice.listen;
+
+      // Feed the two outcomes continuous mode has to survive: a turn that heard
+      // nothing, and a deliberate stop.
+      let reply = { ok: false, error: { code: 'E_STT_EMPTY', message: 'nothing' } };
+      // contextBridge freezes the exposed object, so it cannot be patched
+      // directly. Swap the reference the app module holds instead.
+      const realVoice = a.apiVoice;
+      try {
+        Object.defineProperty(a, 'apiVoice', { value: { ...realVoice, listen: async () => reply }, configurable: true, writable: true });
+        stubbed = true;
+      } catch (e) { /* fall through to the stubbed flag */ }
+      if (!stubbed) return { error: 'could not stub the voice bridge: ' + e.message };
+      a.setContinuousMode(true);
+      await new Promise(r => setTimeout(r, 3500));
+      const afterSilence = { states: [...new Set(seen)], final: a.store.state };
+
+      reply = { ok: false, stopped: true, error: { code: 'E_STT_STOPPED', message: 'stopped' } };
+      await new Promise(r => setTimeout(r, 3500));
+
+      a.setContinuousMode(false);
+      await new Promise(r => setTimeout(r, 2500));
+      Object.defineProperty(a, 'apiVoice', { value: realVoice, configurable: true, writable: true });
+      unhook();
+      return { afterSilence, states: [...new Set(seen)], final: a.store.state, continuous: !!a.continuous };
+    })()`);
+    check('a silent room never raises an error in continuous mode',
+      !noisy.error && !noisy.states.includes('ERROR'), `states seen: ${noisy.states.join(' -> ')}${noisy.error ? ' | ' + noisy.error : ''}`);
+    check('continuous mode keeps listening across silent turns',
+      !!noisy.afterSilence && noisy.afterSilence.states.includes('LISTENING') && noisy.afterSilence.states.includes('IDLE'),
+      noisy.afterSilence ? `states seen: ${noisy.afterSilence.states.join(' -> ')}` : JSON.stringify(noisy));
+    check('turning continuous mode off returns to idle',
+      noisy.continuous === false && noisy.final === 'IDLE', JSON.stringify({ final: noisy.final, continuous: noisy.continuous }));
+
+    check('continuous mode turns push to talk off in the same write',
+      vcfg.afterCont.ptt === false, `ptt=${vcfg.afterCont.ptt}`);
+
+    check('re-enabling push to talk clears continuous and closes the mic',
+      vcfg.restored.ptt === true && vcfg.restored.continuous === false &&
+      vcfg.restored.micActive === false && vcfg.restored.rowHidden === true,
+      JSON.stringify(vcfg.restored));
+
+    // config must agree with the UI, not just the checkbox
+    const persisted = await cdp.eval(`(() => {
+      const a = window.legionApp;
+      return { pushToTalk: a.config?.voice?.pushToTalk, continuous: a.config?.voice?.continuous };
+    })()`);
+    check('config agrees with the settings panel after the round trip',
+      persisted.pushToTalk === true && persisted.continuous === false,
+      JSON.stringify(persisted));
+
+    await cdp.eval(`window.legionApp.togglePanel(null)`);
+    await sleep(700);
+
     const stillAlive = await cdp.eval(`(() => ({ state: window.legionApp.store.state, fps: Math.round(window.legionApp.stage.fps) }))()`);
     check('shell still healthy after the tour', stillAlive.state === 'IDLE' && stillAlive.fps > 0, JSON.stringify(stillAlive));
 
