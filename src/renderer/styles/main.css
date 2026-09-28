@@ -572,3 +572,95 @@ body.reduced-motion .status-chip .bar i { transition: none; }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .001s !important; transition-duration: .12s !important; }
 }
+
+
+/* ── tactical HUD / depth layer ─────────────────────────────── */
+.hud {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  overflow: hidden;
+  opacity: .72;
+  transition: opacity .5s var(--ease);
+}
+body[data-state="OFFLINE"] .hud { opacity: .35; }
+body[data-state="ERROR"] .hud { opacity: .9; }
+
+.hud-corner {
+  position: absolute;
+  display: grid;
+  gap: 4px;
+  min-width: 128px;
+  font-family: var(--mono);
+  font-size: 8px;
+  line-height: 1.25;
+  letter-spacing: .16em;
+  color: var(--ink-3);
+  text-transform: uppercase;
+}
+.hud-corner span { color: var(--ink-3); }
+.hud-corner b { color: rgba(223,231,242,.62); font-weight: 500; }
+.hud-corner i {
+  display: block;
+  width: 34px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--accent), transparent);
+  box-shadow: 0 0 8px rgba(53,200,255,.5);
+}
+.hud-tl { left: 22px; top: 58px; }
+.hud-tr { right: 22px; top: 58px; text-align: right; justify-items: end; }
+.hud-tr i { transform: scaleX(-1); }
+.hud-bl { left: 22px; bottom: 54px; display: flex; gap: 8px; align-items: center; }
+.hud-br { right: 22px; bottom: 54px; display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+
+.reticle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(68vw, 760px);
+  height: min(68vw, 760px);
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(53,200,255,.035);
+  border-radius: 50%;
+}
+.reticle::before,
+.reticle::after {
+  content: "";
+  position: absolute;
+  inset: 8%;
+  border: 1px dashed rgba(53,200,255,.028);
+  border-radius: 50%;
+}
+.reticle-a { animation: hudSpin 38s linear infinite; }
+.reticle-b { width: min(54vw, 600px); height: min(54vw, 600px); animation: hudSpinReverse 52s linear infinite; }
+.reticle-b::before { inset: 18%; }
+.reticle-b::after { inset: 36%; border-style: solid; border-color: rgba(53,200,255,.022); }
+
+.hud-sweep {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(52vw, 620px);
+  height: min(52vw, 620px);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, transparent 0deg 325deg, rgba(53,200,255,.08) 345deg, transparent 360deg);
+  mask: radial-gradient(circle, transparent 61%, #000 62%, #000 62.2%, transparent 63%);
+  animation: hudSpin 9s linear infinite;
+  opacity: .55;
+}
+body.reduced-motion .reticle-a,
+body.reduced-motion .reticle-b,
+body.reduced-motion .hud-sweep { animation: none; }
+
+@keyframes hudSpin { to { transform: translate(-50%, -50%) rotate(360deg); } }
+@keyframes hudSpinReverse { to { transform: translate(-50%, -50%) rotate(-360deg); } }
+
+body[data-state="LISTENING"] .hud-sweep { background: conic-gradient(from 0deg, transparent 0deg 315deg, rgba(255,171,61,.12) 342deg, transparent 360deg); }
+body[data-state="ERROR"] .hud-sweep { background: conic-gradient(from 0deg, transparent 0deg 300deg, rgba(255,95,67,.16) 340deg, transparent 360deg); }
+
+@media (max-width: 900px) {
+  .hud-corner { opacity: .55; }
+  .hud-bl, .hud-br { display: none; }
+}
