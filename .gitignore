@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+
+# build output and test captures
+dist/
+out/
+artifacts/
+*.log
+
+# local runtime state — settings.json and secrets.json are written here by
+# Electron under userData, but keep these patterns so a local run that puts
+# them beside the source can never be committed
+secrets.json
+settings.json
+*.secret
+.env
+.env.*
+
+# editor and OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
