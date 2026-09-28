@@ -579,14 +579,12 @@ class Legion {
     this.store.setStreaming('');
     this.store.setState('PROCESSING');
 
-    const push = (m) => { this.memory.session.push(m); this.emit('memory:session'); };
-    push({ role: 'user', text: clean, at: new Date().toISOString() });
-
+    // The main process is the single source of truth for persisted conversation
+    // history. Do not append locally here or messages would be stored twice.
     try {
       const res = await api.ai.chat(clean);
       if (!res || !res.ok) {
         const msg = res?.error?.message || 'The AI provider did not respond.';
-        push({ role: 'error', text: msg, at: new Date().toISOString() });
         this.store.setCaption('', false);
         this.store.setState('ERROR', msg);
         this.toast('error', 'No answer', msg);
@@ -594,7 +592,6 @@ class Legion {
         return;
       }
       const reply = res.text || '';
-      push({ role: 'assistant', text: reply, at: new Date().toISOString() });
       this.store.setStreaming('');
       this.store.setCaption(reply, false);
       await this.speak(reply);
