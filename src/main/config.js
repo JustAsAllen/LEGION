@@ -32,7 +32,9 @@ const DEFAULTS = Object.freeze({
     rate: 0,                     // -10 .. 10
     volume: 100,                 // 0 .. 100
     pitch: 0,                    // -10 .. 10
-    sttEngine: 'webspeech',      // webspeech | whisper-cli
+    muted: false,                // microphone muted; analyser stays live so the
+                                 // level meter still shows the true input level
+    sttEngine: 'sapi',           // the only implemented engine is Windows SAPI
     whisperModelPath: ''
   },
 

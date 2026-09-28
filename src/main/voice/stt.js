@@ -20,12 +20,15 @@ const path = require('path');
 
 let active = null;
 
+// Sentinel paths we deliberately stopped. When the kill races the recogniser's
+// own exit, Node reports SIGKILL with no output, which is indistinguishable
+// from a real timeout unless we remember the request.
+const stoppedFiles = new Set();
+
 const PS_RECOGNIZE = `
 $ErrorActionPreference = 'Stop'
 $stopFile = $args[0]
 $maxSec  = [double]$args[1]
-$deviceIndex = -1
-if ($args.Length -ge 3 -and $args[2] -ne '') { $deviceIndex = [int]$args[2] }
 
 Add-Type -AssemblyName System.Speech
 
@@ -45,23 +48,20 @@ if (-not $recognizerInfo) {
   exit 0
 }
 
-if ($deviceIndex -ge 0) {
-  try {
-    $tts = New-Object System.Speech.Synthesis.SpeechSynthesizer
-    $engine.SetInputToAudioDevice($tts.GetInstalledVoices()[$deviceIndex].VoiceInfo)
-  } catch {
-    try { $engine.SetInputToDefaultAudioDevice() } catch {
-      $engine.Dispose()
-      [Console]::Out.Write('__LEGION_ERR__NO_DEVICE')
-      exit 0
-    }
-  }
-} else {
-  try { $engine.SetInputToDefaultAudioDevice() } catch {
-    $engine.Dispose()
-    [Console]::Out.Write('__LEGION_ERR__NO_DEVICE')
-    exit 0
-  }
+# System.Speech on .NET Framework exposes no API for choosing a capture device:
+# SpeechRecognitionEngine has only SetInputToDefaultAudioDevice, and
+# AudioDeviceManager is not in the public surface. The old code indexed
+# GetInstalledVoices() - a list of TTS output voices - and passed a VoiceInfo
+# to SetInputToAudioDevice, which does not exist; it always threw and fell
+# through to the default device, so a chosen microphone was silently ignored.
+# Microphone choice is honoured on the analyser path (getUserMedia deviceId);
+# dictation uses the system default input and reports so instead of pretending.
+$usingDefaultDevice = $true
+
+try { $engine.SetInputToDefaultAudioDevice() } catch {
+  $engine.Dispose()
+  [Console]::Out.Write('__LEGION_ERR__NO_DEVICE')
+  exit 0
 }
 
 try { $engine.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar)) } catch { }
@@ -109,18 +109,51 @@ function listen(options) {
 
   const stopFile = stopSentinel();
   const maxSeconds = Math.max(1.5, Math.min(60, Number(opts.maxSeconds) || 14));
-  const deviceIndex = Number.isInteger(opts.deviceIndex) && opts.deviceIndex >= 0 ? opts.deviceIndex : -1;
+  const scriptFile = path.join(os.tmpdir(), `legion-stt-${Date.now()}-${Math.random().toString(36).slice(2)}.ps1`);
 
   const promise = new Promise((resolve) => {
+    // The script is written to a file and run with -File, passing the sentinel
+    // and the time limit as real arguments. The previous code passed the script
+    // inline as `-Command -Command SCRIPT -- sentinel seconds`, which does not
+    // work: PowerShell concatenates the trailing tokens onto the end of the
+    // script text, so the whole invocation died with "Missing expression after
+    // unary operator '--'" and wrote nothing to stdout. Every push-to-talk
+    // attempt therefore reported "Voice recognition heard nothing" and no
+    // recogniser ever ran. tts.js hit the same class of problem with stdin.
+    try {
+      fs.writeFileSync(scriptFile, PS_RECOGNIZE, 'utf8');
+    } catch (err) {
+      cleanup(stopFile);
+      resolve({ ok: false, error: { code: 'E_STT_SCRIPT', message: `Could not prepare the speech recogniser script: ${err.message}` } });
+      return;
+    }
+
     const child = execFile(
       'powershell',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '-Command', PS_RECOGNIZE, '--', stopFile, String(maxSeconds), String(deviceIndex)],
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptFile, stopFile, String(maxSeconds)],
       { timeout: (maxSeconds + 25) * 1000, windowsHide: true, maxBuffer: 1024 * 1024, killSignal: 'SIGKILL' },
-      (err, stdout) => {
+      (err, stdout, stderr) => {
         cleanup(stopFile);
+        cleanup(scriptFile);
+        const wasStopped = stoppedFiles.has(stopFile);
+        stoppedFiles.delete(stopFile);
         if (active && active.stopFile === stopFile) active = null;
         const out = String(stdout || '').trim();
+        // Surface a broken invocation instead of letting it masquerade as a
+        // quiet room. A PowerShell parse or runtime error is a real fault.
+        if (err && !out && String(stderr || '').trim()) {
+          const firstLine = String(stderr).split(/\r?\n/).find((l) => /\S/.test(l)) || 'unknown error';
+          resolve({ ok: false, error: { code: 'E_STT_SCRIPT', message: `The speech recogniser failed to start: ${firstLine.trim()}` } });
+          return;
+        }
         if (err && /killed|SIGKILL|timed out/i.test(String(err.message)) && !out) {
+          // A kill we asked for is a release, not a failure. Report it as an
+          // empty capture so the caller clears the listening state quietly
+          // instead of showing "timed out" for a deliberate push-to-talk.
+          if (wasStopped) {
+            resolve({ ok: false, stopped: true, error: { code: 'E_STT_STOPPED', message: 'Capture stopped before anything was recognised.' } });
+            return;
+          }
           resolve({ ok: false, error: { code: 'E_STT_TIMEOUT', message: 'Voice recognition timed out.' } });
           return;
         }
@@ -137,13 +170,20 @@ function listen(options) {
           return;
         }
         if (!out) {
+          // The recogniser can also exit cleanly with nothing recognised: it saw
+          // the sentinel and stopped before any speech. That is the user's own
+          // release, so it must not read as "could not hear you".
+          if (wasStopped) {
+            resolve({ ok: false, stopped: true, error: { code: 'E_STT_STOPPED', message: 'Capture stopped before anything was recognised.' } });
+            return;
+          }
           resolve({ ok: false, error: { code: 'E_STT_EMPTY', message: 'Voice recognition heard nothing. Try speaking closer to the microphone.' } });
           return;
         }
         resolve({ ok: true, transcript: out.replace(/\s+/g, ' ').trim() });
       }
     );
-    active = { child, stopFile, startedAt: Date.now() };
+    active = { child, stopFile, scriptFile, startedAt: Date.now() };
   });
 
   return {
@@ -155,11 +195,13 @@ function listen(options) {
 function stopActive() {
   if (!active) return false;
   const { stopFile } = active;
+  stoppedFiles.add(stopFile);
   try { fs.writeFileSync(stopFile, 'stop'); } catch (_) { /* ignore */ }
   // Give the recogniser a moment to flush, then make sure it dies.
   setTimeout(() => {
     if (active && active.stopFile === stopFile) {
       try { active.child.kill('SIGKILL'); } catch (_) { /* ignore */ }
+      cleanup(active.scriptFile);
       active = null;
     }
   }, 1200).unref?.();
@@ -168,13 +210,17 @@ function stopActive() {
 
 function isListening() { return !!active; }
 
-/** Report which recognisers Windows actually has installed. */
+/** Report which recogniser is actually in use, and what it can and cannot do. */
 function capabilities() {
   return {
     platform: process.platform,
     sapi: process.platform === 'win32',
+    // Stated plainly so the UI can explain it rather than offering a selector
+    // that the dictation engine would ignore.
+    dictationDevice: 'system-default',
+    selectableCaptureDevice: false,
     note: process.platform === 'win32'
-      ? 'Local dictation uses the Windows speech recogniser and the system default input device.'
+      ? 'Local dictation uses the Windows speech recogniser with the system default input device. Microphone choice applies to the level meter only, because System.Speech exposes no capture-device API.'
       : 'Local dictation requires Windows.'
   };
 }

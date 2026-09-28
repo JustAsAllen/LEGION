@@ -435,15 +435,15 @@ function registerIpc() {
   handle('voice:listenStop', async () => ({ stopped: stt.stopActive() }));
   handle('voice:listen', async (opts) => {
     const o = opts || {};
-    const v = config.get().voice;
-    const deviceIndex = o.deviceIndex !== undefined ? Number(o.deviceIndex) : -1;
     setState('LISTENING');
     try {
-      const res = await stt.listen({
-        maxSeconds: o.maxSeconds || 14,
-        deviceIndex: Number.isFinite(deviceIndex) ? deviceIndex : -1
-      });
-      void v;
+      const res = await stt.listen({ maxSeconds: o.maxSeconds || 14 });
+      if (res.stopped) {
+        // A released push-to-talk is not a failure. Return to idle quietly
+        // rather than showing the user an error for their own action.
+        setState('IDLE');
+        return { ok: false, stopped: true, error: res.error };
+      }
       if (!res.ok) {
         setState('ERROR', { message: res.error.message, code: res.error.code, at: Date.now() });
         return { ok: false, error: res.error };

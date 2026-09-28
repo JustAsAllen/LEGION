@@ -540,8 +540,11 @@ class Legion {
       .then((res) => {
         this.#releaseMic();
         if (!res || !res.ok) {
-          const msg = res?.error?.message || 'Voice recognition failed.';
           this.store.setCaption('', false);
+          // The user released the key, so there is nothing to report. Only a
+          // genuine failure should raise an error state and a toast.
+          if (res?.stopped) { this.store.setState('IDLE'); return; }
+          const msg = res?.error?.message || 'Voice recognition failed.';
           this.store.setState('ERROR', msg);
           this.toast('error', 'Could not hear you', msg);
           return;
