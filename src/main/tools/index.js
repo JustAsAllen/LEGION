@@ -54,7 +54,7 @@ class ToolManager {
     return this.registry.list().map((t) => ({
       name: t.name, category: t.category, risk: t.risk,
       description: t.description, enabled: enabled.has(t.category),
-      requiresConfirmation: typeof t.confirm === 'function' && t.risk === RISK.DESTRUCTIVE
+      requiresConfirmation: typeof t.confirm === 'function' && (t.risk === RISK.WRITE || t.risk === RISK.DESTRUCTIVE)
     }));
   }
 
@@ -72,7 +72,7 @@ class ToolManager {
 
     const args = this.registry.validateArgs(tool, rawArgs || {});
 
-    if (tool.risk === RISK.DESTRUCTIVE && this.deps.settings.get().tools.requireConfirmation) {
+    if ((tool.risk === RISK.WRITE || tool.risk === RISK.DESTRUCTIVE) && this.deps.settings.get().tools.requireConfirmation) {
       let plan = null;
       if (typeof tool.confirm === 'function') {
         plan = await tool.confirm(args, this._ctx());
