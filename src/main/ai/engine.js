@@ -8,9 +8,10 @@ const MAX_TOOL_ROUNDS = 6;
 
 class AIEngine {
   constructor(deps) {
-    this.deps = deps;                 // { settings, secrets, toolManager, memory, onEvent }
+    this.deps = deps;
     this.abort = null;
     this.profileId = 'legion';
+    this.busy = false;
   }
 
   get config() { return this.deps.settings.get().ai; }
@@ -21,11 +22,11 @@ class AIEngine {
 
   status() {
     const p = this.config.provider;
-    if (p === 'none') return { provider: 'none', ready: false, reason: 'No provider configured.', secret: this.deps.secrets.status(p) };
-    if (p === 'ollama') return { provider: p, ready: true, secret: this.deps.secrets.status(p), baseUrl: this.config.baseUrl || 'http://127.0.0.1:11434' };
+    if (p === 'none') return { provider: 'none', ready: false, reason: 'No provider configured.', secret: this.deps.secrets.status(p), busy: this.busy };
+    if (p === 'ollama') return { provider: p, ready: true, secret: this.deps.secrets.status(p), baseUrl: this.config.baseUrl || 'http://127.0.0.1:11434', busy: this.busy };
     const secret = this.deps.secrets.status(p);
-    if (!secret.configured) return { provider: p, ready: false, reason: 'No API key configured.', secret };
-    return { provider: p, ready: true, secret, model: this.config.model || null };
+    if (!secret.configured) return { provider: p, ready: false, reason: 'No API key configured.', secret, busy: this.busy };
+    return { provider: p, ready: true, secret, model: this.config.model || null, busy: this.busy };
   }
 
   async probe() {
@@ -40,21 +41,24 @@ class AIEngine {
   }
 
   cancel() {
-    if (this.abort) { try { this.abort.abort(); } catch (_) { /* ignore */ } this.abort = null; return true; }
+    if (this.abort) {
+      try { this.abort.abort(); } catch (_) { /* ignore */ }
+      this.abort = null;
+      return true;
+    }
     return false;
   }
 
-  /**
-   * Run one conversational turn.
-   * Emits: 'state' (processing), 'tool' (name/phase/result), 'delta' (partial text)
-   */
   async respond(userText) {
+    if (this.busy) throw new ToolError('LEGION is already processing a request.', 'E_BUSY');
+
     const cfg = this.config;
     const st = this.status();
     if (!st.ready) {
       throw new ToolError(st.reason || 'AI connection unavailable.', st.provider === 'none' ? 'E_NO_PROVIDER' : 'E_NO_KEY');
     }
 
+    this.busy = true;
     this.deps.memory.appendMessage('user', userText);
     this.abort = new AbortController();
     const signal = this.abort.signal;
@@ -66,7 +70,6 @@ class AIEngine {
       longTerm: this.deps.memory.list()
     });
 
-    // Working transcript: model turns only (tool traffic handled separately)
     const wire = this.deps.memory.context(cfg.contextTurns)
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .map((m) => ({ role: m.role, content: m.text }));
@@ -88,6 +91,16 @@ class AIEngine {
 
         if (!res.toolCalls || !res.toolCalls.length) break;
 
+        // Preserve the provider's structured tool-call message. This is
+        // essential for the next round on OpenAI/Anthropic-compatible APIs.
+        wire.push({
+          role: 'assistant',
+          content: res.text || '',
+          toolCalls: res.toolCalls.map((call) => ({
+            id: call.id, name: call.name, arguments: call.arguments || {}
+          }))
+        });
+
         for (const call of res.toolCalls) {
           this.emit('tool', { name: call.name, phase: 'start', arguments: call.arguments || {} });
           let outcome;
@@ -102,8 +115,12 @@ class AIEngine {
           this.emit('tool', { name: call.name, phase: 'end', ok: outcome.ok, detail: outcome.ok ? null : outcome.error.message });
 
           toolLog.push({ call, outcome });
-          wire.push({ role: 'assistant', content: res.text || `(calling ${call.name})` });
-          wire.push({ role: 'user', content: `Tool result for ${call.name}:\n${JSON.stringify(outcome).slice(0, 6000)}` });
+          wire.push({
+            role: 'tool',
+            toolCallId: call.id,
+            name: call.name,
+            content: JSON.stringify(outcome).slice(0, 6000)
+          });
         }
 
         if (round === MAX_TOOL_ROUNDS - 1) {
@@ -119,6 +136,7 @@ class AIEngine {
       throw err;
     } finally {
       this.abort = null;
+      this.busy = false;
     }
 
     if (!finalText && toolSummaries.length) {
