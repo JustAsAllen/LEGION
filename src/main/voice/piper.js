@@ -53,15 +53,17 @@ async function locate(opts) {
     const bin = configured;
     if (!fs.existsSync(bin)) return null;
     if (!model || !fs.existsSync(model)) return null;
-    return { bin, model };
+    const config = model + '.json';
+    if (!fs.existsSync(config)) return null;
+    return { bin, model, config };
   }
 
   for (const bin of candidateBins()) {
     if (!fs.existsSync(bin)) continue;
     // Prefer a model sitting next to the binary, the usual layout.
-    const sibling = fs.readdirSync(path.dirname(bin)).find((f) => f.endsWith('.onnx'));
+    const sibling = fs.readdirSync(path.dirname(bin)).find((f) => f.endsWith('.onnx') && fs.existsSync(path.join(path.dirname(bin), f + '.json')));
     const modelPath = sibling ? path.join(path.dirname(bin), sibling) : '';
-    if (modelPath) return { bin, model: modelPath };
+    if (modelPath) return { bin, model: modelPath, config: modelPath + '.json' };
   }
   return null;
 }
@@ -99,7 +101,7 @@ async function synthesize(text, opts) {
 
   try {
     await new Promise((resolve, reject) => {
-      const child = execFile(found.bin, ['--model', found.model, '--output_file', outFile], {
+      const child = execFile(found.bin, ['--model', found.model, '--config', found.config, '--output_file', outFile], {
         timeout: Math.max(15000, clean.length * 200), windowsHide: true, maxBuffer: 1024 * 1024
       }, (err) => (err ? reject(new Error(`Piper failed: ${err.message}`)) : resolve()));
       child.stdin.on('error', () => { /* piper may exit before we finish writing */ });
