@@ -20,6 +20,7 @@
     "check:firstrun": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-firstrun.js .",
     "check:security": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-security.js",
     "check:package": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-package.js",
+    "check:ai": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-ai.js",
     "check:voice": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-voice.js .",
     "check:voicepack": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-voicepack.js",
     "voicepack:sample": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/make-voicepack-sample.js",
