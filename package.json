@@ -12,7 +12,7 @@
     "dev": "electron . --dev",
     "build": "electron-builder --dir",
     "dist": "electron-builder",
-    "pack": "electron-builder --dir",
+    "pack": "npm run build",
     "selftest": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/scope-selftest.js",
     "check:static": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/static-check.js .",
     "check:data": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-data.js .",
@@ -26,11 +26,11 @@
     "voicepack:sample": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/make-voicepack-sample.js",
     "check:shell": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-shell.js .",
     "check:render": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-render.js .",
-    "check": "npm run selftest && npm run check:static && npm run check:ipc && npm run check:security && npm run check:data && npm run check:voice && npm run check:voicepack && npm run check:firstrun && npm run check:shell && npm run check:render",
+    "check": "npm run selftest && npm run check:static && npm run check:ipc && npm run check:security && npm run check:data && npm run check:voice && npm run check:voicepack && npm run check:firstrun && npm run check:shell && npm run check:render && npm run check:ai",
     "check:fast": "npm run selftest && npm run check:static && npm run check:ipc && npm run check:security",
     "check:launch": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-launch.js",
     "bench": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/bench.js",
-    "launch": "electron ."
+    "launch": "npm start"
   },
   "dependencies": {
     "msedge-tts": "^2.0.8",
@@ -45,37 +45,13 @@
   "build": {
     "appId": "ai.legion.desktop",
     "productName": "LEGION",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "src/**/*",
-      "assets/**/*",
-      "voicepack/**/*",
-      "package.json",
-      "!**/*.map"
-    ],
+    "directories": { "output": "release" },
+    "files": ["src/**/*", "assets/**/*", "voicepack/**/*", "package.json", "!**/*.map"],
     "extraResources": [
-      {
-        "from": "voicepack",
-        "to": "voicepack"
-      },
-      {
-        "from": "assets/piper",
-        "to": "piper",
-        "filter": ["**/*"]
-      }
+      { "from": "voicepack", "to": "voicepack" },
+      { "from": "assets/piper", "to": "piper", "filter": ["**/*"] }
     ],
-    "win": {
-      "target": [
-        "nsis",
-        "portable"
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "perMachine": false
-    }
+    "win": { "target": ["nsis", "portable"] },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "perMachine": false }
   }
 }
