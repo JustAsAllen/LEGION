@@ -1,181 +1,193 @@
-# LEGION — architecture
+# LEGION — Architecture
 
-What the process boundaries are, what talks to what, and why. For installation
-and usage see `README.md`; for how to contribute see `CONTRIBUTING.md`.
+LEGION is a Windows-first Electron desktop assistant built around a strict privilege boundary and a small, explicit runtime surface.
 
-## The two-process split
+## 1. Process architecture
 
-LEGION is an Electron app with a strict boundary:
+    ┌──────────────── RENDERER ────────────────┐
+    │ DOM · WebGL2 · Web Audio · state         │
+    │ live AI text · panels · visual stages    │
+    └──────────────────┬───────────────────────┘
+                       │ contextBridge
+                 explicit IPC channels
+                       │
+    ┌──────────────────▼──────────────────────┐
+    │                 PRELOAD                 │
+    │ fixed allowlist; no generic bridge      │
+    └──────────────────┬──────────────────────┘
+                       │
+    ┌──────────────────▼──────────────────────┐
+    │                  MAIN                   │
+    │ state · AI · memory · tools · voice     │
+    │ filesystem · network · OS integration  │
+    └─────────────────────────────────────────┘
 
-```
-  renderer  (src/renderer)          main  (src/main)
-  ───────────────────────────        ──────────────────────────────
-  ES modules, no Node                CommonJS, full Node
-  DOM, WebGL, Web Audio              filesystem, network, OS APIs
-  no secrets, ever                   the only place keys exist
-  window.legion                      window.legionApp
-        │                                   ▲
-        └──────── preload (contextBridge) ─────┘
-                    one named channel per action
-```
+The renderer never directly imports fs, child_process, or network clients. Provider requests, secrets, tool execution, and voice synthesis remain in main.
 
-The renderer never touches `fs`, `child_process`, or `net`. It asks, and the
-main process decides whether to do it. That is what keeps a bad tool result or
-a prompt-injected instruction from becoming arbitrary code execution in the
-renderer, and it is why `scripts/static-check.js` and `scripts/scope-analyzer.js`
-are part of `npm run check` rather than optional lint.
+## 2. Main-process tiers
 
-`preload.js` is the only bridge. It exposes a fixed list of channel names, and
-each one maps to exactly one handler in `main.js`. The scope analyzer fails the
-build if a channel is handled without a sender, sent without a handler, or
-missing from the allowlist — so a new capability cannot be wired up halfway.
+| Area | Module | Responsibility |
+|---|---|---|
+| AI | src/main/ai/engine.js | conversation turn orchestration, tool rounds, streaming events |
+| AI | src/main/ai/providers.js | OpenAI, Anthropic and Ollama adapters |
+| AI | src/main/ai/personality.js | response/personality policy |
+| Voice | src/main/voice/tts.js | four-tier synthesis and provenance |
+| Voice | src/main/voice/voicepack.js | exact prerecorded phrase resolution |
+| Voice | src/main/voice/edge.js | online neural synthesis |
+| Voice | src/main/voice/piper.js | local Piper discovery, model metadata and synthesis |
+| Voice | src/main/voice/stt.js | Windows speech recognition |
+| Voice | src/main/voice/wake.js | continuous listening and wake word |
+| Tools | src/main/tools/registry.js | model-visible tool catalogue |
+| Tools | src/main/tools/sandbox.js | write roots and command policy |
+| System | src/main/system/metrics.js | CPU/memory metrics |
+| Core | src/main/main.js | window lifecycle, state machine and IPC registration |
 
-## Main process
+## 3. IPC contract
 
-`main.js` (25 KB) is the spine: it creates the window, owns the state machine,
-and registers the 44 IPC handlers. The rest are focused modules it calls into.
+Preload is the only renderer/main bridge. Each exposed action has a named channel and a corresponding main handler. The static/IPC checks reject half-wired channels.
 
-| Module | Responsibility |
-|---|---|
-| `main.js` | window, state machine, all IPC handlers, global shortcuts |
-| `config.js` | validated, merged config persisted as JSON |
-| `secrets.js` | API keys, read only in main, never sent to the renderer |
-| `memory.js` | short-term, session and optional long-term memory |
-| `ai/engine.js` | provider-independent conversation turn |
-| `ai/providers.js` | Anthropic, OpenAI, Ollama adapters |
-| `ai/personality.js` | how replies are phrased |
-| `voice/tts.js` | the synthesis pipeline, and which tier answered |
-| `voice/voicepack.js` | resolve a phrase to a prerecorded clip |
-| `voice/edge.js` | online neural voices, with availability and last-error state |
-| `voice/piper.js` | local neural TTS, bundled-resource discovery plus configurable fallback |
-| `voice/stt.js` | Windows speech recognition |
-| `voice/wake.js` | continuous listening and the wake word |
-| `tools/registry.js` | the tool table the model is shown |
-| `tools/sandbox.js` | write roots and the command allowlist |
-| `tools/*.js` | 36 tools, grouped by area |
-| `system/metrics.js` | real CPU/memory numbers for the status bar |
+### Streaming AI channel
 
-### Live AI turn
+    renderer
+      │
+      ├─ ai:chat ───────────────► main / AI engine
+      │                              │
+      │                              ├─ provider request
+      │                              │    └─ Ollama NDJSON stream
+      │                              │
+      ◄──────── ai:event {delta} ────┘
+      │
+      ├─ accumulate/display streamed text
+      │
+      └─ final reply → existing TTS playback path
 
-The renderer submits text through `ai:chat`. The main process owns the provider call and emits provider text deltas over the existing `ai:event` channel; no network client or secret crosses into the renderer. Ollama uses its newline-delimited streaming response when the engine supplies a delta callback. When the turn completes, the renderer sends the final accumulated reply through the existing hybrid TTS pipeline, so the same voice-pack → online neural → Piper → SAPI ordering applies to live AI responses.
+The network connection and credentials stay in main. The renderer receives text deltas and status/provenance events, not provider secrets.
 
-### The state machine
+If the configured provider is unavailable, the engine can detect a reachable local Ollama service when no provider is configured. The automatic path uses the same provider-independent engine and the same ai:event channel.
 
-Eight states, in `main.js`, and every transition is explicit:
+## 4. AI turn lifecycle
 
-```
-OFFLINE → BOOTING → IDLE ⇄ LISTENING → PROCESSING → SPEAKING → IDLE
-                                    ↓            ↓          ↓
-                                   ALERT  ←──────┘        ERROR
-```
+    input
+      ↓
+    AIEngine.respond()
+      ↓
+    provider selection
+      ├─ configured provider
+      └─ automatic local Ollama detection when provider = none
+      ↓
+    provider.chat(..., onDelta)
+      ↓
+    ai:event / delta
+      ↓
+    tool round(s), when requested
+      ↓
+    final accumulated reply
+      ↓
+    memory append
+      ↓
+    renderer TTS
 
-`setState()` is the only way to change state, and the renderer reflects it
-rather than driving it. `SPEAKING` is released by the renderer reporting
-`voice:speechEnd`, because main cannot see when audio playback finishes.
+Tool execution remains in main and is subject to the confirmation/sandbox policy.
 
-### Voice output
+## 5. Four-tier voice engine
 
-`tts.synthesize()` tries four sources in order and stops at the first that can
-answer. The result carries which one it was (`tier`, `source`, `format`), so the
-UI can say "this sentence was prerecorded" instead of guessing.
+    text
+      │
+      ▼
+    ┌────────────────┐
+    │ 1. Voice pack  │ exact clip?
+    └───────┬────────┘
+            │ miss
+    ┌───────▼────────┐
+    │ 2. Edge neural │ online allowed?
+    └───────┬────────┘
+            │ fail/unavailable
+    ┌───────▼────────┐
+    │ 3. Piper       │ local runtime/model?
+    └───────┬────────┘
+            │ fail/unavailable
+    ┌───────▼────────┐
+    │ 4. Windows SAPI│ final fallback
+    └────────────────┘
 
-1. **Static voice pack** — a recorded clip. Instant, offline, and always first.
-2. **Online voice** (`voice/edge.js`) — Microsoft Edge neural voices, when the
-   phrase is not recorded and the mode allows the network. Returns MP3.
-3. **Piper** (`voice/piper.js`) — local neural TTS. Development builds discover `assets/piper`; packaged builds discover the unpacked `resources/piper` directory. It is used when `piper.exe` and an `.onnx` voice model are present.
-4. **System voice (SAPI)** — the final fallback. Returns WAV.
+Each tier is failure-tolerant: returning null moves to the next tier. The result records tier, source, and format.
 
-Two rules make this predictable. A tier that fails returns `null` instead of
-throwing, so an offline machine or a dead service degrades one step rather than
-breaking speech. And `pack-only` means *only*: an unrecorded phrase is silent,
-because silently substituting a different voice would break the promise.
+### Piper packaging
 
-The mode (`voice.ttsMode`) decides how far down the list the pipeline may go:
-`auto` uses all four, `offline` skips the network entirely, `pack-only` stops at
-the first. The renderer plays whatever container comes back — `decodeAudioData`
-handles the pack's WAV and the online tier's MP3 without a format branch.
+Development discovery checks assets/piper/. Packaged Windows builds discover resources/piper/. electron-builder copies that directory as an extra resource. The runtime expects a compatible Piper executable, an ONNX model, and the model sidecar metadata where required.
 
-### Secrets
+The repository intentionally does not fabricate or silently download redistribution-sensitive runtime assets.
 
-Enforced in `secrets.js`, not by convention: keys are read in main only, never
-cross IPC, and the renderer can ask *whether* a key exists but never *what* it
-is. A key can come from an env var or a `0600` file in `userData/secrets.json`.
+## 6. Renderer pipeline
 
-## Renderer
+    index.html
+       │
+       ├─ js/app.js ───── store / panels / stage / IPC wiring
+       ├─ js/audio.js ─── mic + TTS playback + analysers
+       ├─ js/state.js ─── observable state
+       └─ visuals/stage.js
+              │
+              ├─ logo-model.js ── analytic three-arc ring
+              ├─ sampler.worker.js ── off-main-thread sampling
+              └─ particle-field.js ── GPU instance field
 
-ES modules, loaded by `index.html`. No bundler, no build step, no `type:
-module` in `package.json` — that would break the CommonJS entry points.
+The renderer is unbundled ES modules. Three.js is vendored locally. This keeps the runtime transparent and avoids a second build system.
 
-| Module | Responsibility |
-|---|---|
-| `js/app.js` (45 KB) | wiring: store, audio, stage, panels, keyboard |
-| `js/panels.js` (36 KB) | the settings, memory and tools panels |
-| `js/audio.js` | mic capture, TTS playback, one analyser per source |
-| `js/firstrun.js` | the five-step onboarding wizard |
-| `js/state.js` | tiny observable store |
-| `js/waveform.js` | live waveform from the analyser |
-| `visuals/stage.js` | the WebGL stage, the mark, adaptive quality |
-| `visuals/logo-model.js` | the segmented ring, sampled procedurally |
-| `visuals/particle-field.js` | the instance field |
-| `visuals/sampler.worker.js` | arc sampling off the main thread |
+## 7. WebGL geometry lock
 
-### Audio
+The segmented ring must remain a circle regardless of a 16:9 viewport. The stage therefore uses a square camera projection for the mark rather than deriving the projection from the window aspect ratio.
 
-`audio.js` routes microphone and speech through **separate analysers**. That
-matters: it means the waveform and the state machine are driven by real
-amplitude from the mic and from the reply, not by a timer.
+The renderer check records the live camera aspect and requires:
 
-Speech playback is: main synthesises to a WAV or hands back a pack clip, base64
-to the renderer, `decodeAudioData`, then the same analyser the mic uses. So the
-`SPEAKING` state is backed by genuine audio.
+    camera.aspect === 1
 
-### The mark and adaptive quality
+The canvas itself may be widescreen; the mark projection remains 1:1. This prevents the ring from becoming an oval when the Electron window is wider than it is tall.
 
-`logo-model.js` generates the three-arc ring procedurally and `sampler.worker.js`
-samples arc points off the main thread, so a quality change never stalls a frame.
+## 8. Audio path
 
-`stage.js` owns an adaptive quality policy. The user's chosen tier is a
-**ceiling**: adaptive mode may drop below it when frames get slow, but it never
-climbs past what was explicitly asked for. It reacts to a one-second fps average
-and requires four consecutive good windows before climbing, so it settles instead
-of oscillating. Measured behaviour under load: `ultra → high → medium → low`,
-and back to `ultra` once the frames recovered.
+Microphone input and speech playback use separate analysers. TTS audio is decoded in the renderer with decodeAudioData, then routed through the speech analyser so visual state is driven by actual audio rather than a timer.
 
-## Data flow, end to end
+## 9. State machine
 
-```
- wake word ─┐
- push-to-talk┼→ stt.listen → text ─→ ai.engine ─→ provider ─→ reply ─→ tts/voicepack
-             │                                 │                        │
-             │                                 ├→ tools:invoke          ↓
-             │                                 │     └→ sandbox ─→ fs/net
-             │                                 │                        │
-             │                                 └→ memory:remember        ↓
-             │                                                          audio.js
-             ↓                                                            │
-      setState(ALERT) ───────────────────────────────────────────→ analyser
-```
+    OFFLINE → BOOTING → IDLE ⇄ LISTENING
+                               │
+                               ▼
+                           PROCESSING
+                               │
+                               ▼
+                            SPEAKING
+                               │
+                               └──────→ IDLE
 
-## Data on disk
+PROCESSING / SPEAKING may enter ALERT or ERROR as appropriate.
 
-Everything lives under Electron's `userData`, so it survives upgrades and is
-removed with the app. `--dev` puts it in a `dev/` subfolder, so development
-never touches real user data.
+Main owns transitions. Renderer reports events such as speech completion; it does not invent application state.
 
-| Path | What |
-|---|---|
-| `config.json` | settings |
-| `secrets.json` | API keys, `0600` |
-| `memory/` | session and long-term memory |
-| `metrics.json` | the numbers the status bar shows |
-| `../voicepack/` | prerecorded clips, in the project root |
+## 10. Packaging
 
-## What is deliberately not here
+electron-builder uses:
 
-- **No bundler.** `electron-builder` handles the app; the renderer is served as
-  ES modules. A build step on the renderer would only hide what the browser
-  already loads.
-- **No framework.** Vanilla DOM and WebGL2. The dependency list is short enough
-  to read.
-- **No renderer-side secrets, ever.** If a future feature seems to need one,
-  the design is wrong.
+- src/**/* — application source
+- assets/**/* — visual assets and optional Piper runtime source
+- voicepack/**/* — packaged example voice pack
+- voicepack → resources/voicepack — editable installed copy
+- assets/piper → resources/piper — local Piper runtime/model resources
+- output directory: release/
+- Windows targets: NSIS installer + portable executable
+
+Build products are never source-controlled.
+
+## 11. Verification layers
+
+1. **Static** — syntax, scope, DOM/channel consistency.
+2. **IPC/security** — channel registration, bridge allowlist, sandbox and secrets.
+3. **Data/voice** — config, storage, TTS routing and voice-pack provenance.
+4. **Live renderer** — shell behaviour, WebGL state and square camera projection.
+5. **Package** — real unpacked build and installed resource layout.
+6. **Optional live AI** — real Ollama streamed turn with LEGION_LIVE_AI=1.
+
+The default suite stays offline unless a live check is explicitly enabled.
+
+## 12. Data on disk
+
+Electron user data contains configuration, secrets, memory and metrics. Development data is isolated from normal user data. Project-root voicepack/ and build-time assets/piper/ are repository resources, not user secrets.
