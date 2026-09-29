@@ -199,41 +199,49 @@ async function main() {
     /* ---- 3b. the scanline toggle must move real pixels ---------- */
     // The field shader has no uScanlines, so the flag is only honest if the
     // CSS overlay actually responds. Assert the rendered opacity, not the flag.
-    const scanOn = await cdp.eval(`(() => {
+    const scanOn = await cdp.eval(`(async () => {
+      const until = async (fn, ms) => { const end = Date.now() + ms; while (Date.now() < end) { let v; try { v = fn(); } catch (e) { v = null; } if (v) return v; await new Promise(r => setTimeout(r, 40)); } return null; };
       window.legionApp.stage.setScanlines(true);
-      return new Promise(r => setTimeout(() => r({
-        opacity: parseFloat(getComputedStyle(document.querySelector('.scanlines')).opacity),
-        noClass: document.body.classList.contains('no-scanlines')
-      }), 700));
+      return until(() => {
+        const el = document.querySelector('.scanlines');
+        return parseFloat(getComputedStyle(el).opacity) > 0.1 &&
+          !document.body.classList.contains('no-scanlines')
+          ? { opacity: parseFloat(getComputedStyle(el).opacity),
+              noClass: document.body.classList.contains('no-scanlines') } : null;
+      }, 8000) || { opacity: -1, noClass: true };
     })()`);
     check('scanlines overlay is visible when enabled',
       scanOn.opacity > 0.1 && scanOn.noClass === false, JSON.stringify(scanOn));
 
-    const scanOff = await cdp.eval(`(() => {
+    const scanOff = await cdp.eval(`(async () => {
+      const until = async (fn, ms) => { const end = Date.now() + ms; while (Date.now() < end) { let v; try { v = fn(); } catch (e) { v = null; } if (v) return v; await new Promise(r => setTimeout(r, 40)); } return null; };
       window.legionApp.stage.setScanlines(false);
-      return new Promise(r => setTimeout(() => r({
-        opacity: parseFloat(getComputedStyle(document.querySelector('.scanlines')).opacity),
-        noClass: document.body.classList.contains('no-scanlines')
-      }), 700));
+      return until(() => {
+        const el = document.querySelector('.scanlines');
+        const opacity = parseFloat(getComputedStyle(el).opacity);
+        const noClass = document.body.classList.contains('no-scanlines');
+        return (opacity === 0 && noClass) ? { opacity, noClass } : null;
+      }, 8000) || { opacity: -1, noClass: false };
     })()`);
     check('scanlines toggle actually hides the overlay',
       scanOff.opacity === 0 && scanOff.noClass === true, JSON.stringify(scanOff));
 
     // ALERT repaints the overlay through a body[data-state] rule, so this also
     // proves the state mirror reaches the DOM the stylesheet keys off.
-    const alertScan = await cdp.eval(`(() => {
+    const alertScan = await cdp.eval(`(async () => {
+      const until = async (fn, ms) => { const end = Date.now() + ms; while (Date.now() < end) { let v; try { v = fn(); } catch (e) { v = null; } if (v) return v; await new Promise(r => setTimeout(r, 40)); } return null; };
       window.legionApp.stage.setScanlines(true);
       window.legionApp.store.setState('ALERT', 'shell check');
-      return new Promise(r => setTimeout(() => {
+      const out = await until(() => {
         const el = document.querySelector('.scanlines');
-        const out = {
-          body: document.body.dataset.state,
-          opacity: parseFloat(getComputedStyle(el).opacity),
-          red: getComputedStyle(el).backgroundImage.indexOf('255, 95, 67') >= 0
-        };
-        window.legionApp.store.setState('IDLE');
-        r(out);
-      }, 700));
+        const opacity = parseFloat(getComputedStyle(el).opacity);
+        const red = getComputedStyle(el).backgroundImage.indexOf('255, 95, 67') >= 0;
+        return (opacity > 0.5 && red) ? {
+          body: document.body.dataset.state, opacity, red
+        } : null;
+      }, 8000) || { body: document.body.dataset.state, opacity: -1, red: false };
+      window.legionApp.store.setState('IDLE');
+      return out;
     })()`);
     check('alert state repaints the scanline tint',
       alertScan.body === 'ALERT' && alertScan.opacity > 0.5 && alertScan.red, JSON.stringify(alertScan));
@@ -304,14 +312,20 @@ async function main() {
 
     // The stage should shift aside so the mark is not hidden behind the panel.
     // The loop above already left a panel open, so only close it if one is not.
-    const shift = await cdp.eval(`(() => {
+    const shift = await cdp.eval(`(async () => {
+      const until = async (fn, ms) => { const end = Date.now() + ms; while (Date.now() < end) { let v; try { v = fn(); } catch (e) { v = null; } if (v) return v; await new Promise(r => setTimeout(r, 40)); } return null; };
       const a = window.legionApp;
       if (!a.currentPanel) a.togglePanel('settings');
-      return new Promise(res => setTimeout(() => res({
+      // the stage eases in the render loop, so wait for it to move
+      return until(() => Math.abs(a.stage.panelShift) > 1 ? {
         open: a.currentPanel,
         panelShift: a.stage.panelShift,
         camX: a.stage.camera.position.x
-      }), 700));
+      } : null, 10000) || {
+        open: a.currentPanel,
+        panelShift: a.stage.panelShift,
+        camX: a.stage.camera.position.x
+      };
     })()`);
     check('stage yields to an open panel', !!shift.open && Math.abs(shift.panelShift) > 1,
       `panel=${shift.open} panelShift=${shift.panelShift.toFixed(2)} camX=${shift.camX.toFixed(2)}`);

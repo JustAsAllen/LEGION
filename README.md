@@ -57,6 +57,13 @@ npm start        # normal
 npm run dev      # with devtools
 ```
 
+To verify a launcher end to end — that a titled window appears and the render
+loop is alive rather than frozen or spinning:
+
+```bash
+npm run check:launch
+```
+
 ## Checks
 
 LEGION ships with a check suite. Each one is a real test against a live app or a
@@ -77,6 +84,7 @@ npm run check:fast  # static + scope self-test + IPC
 | `npm run check:firstrun` | First-run flow and dismiss handling |
 | `npm run check:shell` | Live UI: geometry, panel behaviour, modals, settings round trips |
 | `npm run check:render` | The live renderer: frame rate, element counts, WebGL errors |
+| `npm run check:launch` | Double-clicks the real launcher: time to a titled window, and CPU delta to prove the render loop is alive and not spinning |
 
 `check:static` parses every project file with acorn and reports undeclared reads
 instead of trusting a hand-maintained list of globals. Vendored three.js is

@@ -33,6 +33,8 @@ First run only: `npm install`.
 - [x] **Data layer** — config, metrics, secrets; real values only
 - [x] **Render loop** — WebGL live, 60+ fps, adaptive quality, no GL errors
 - [x] **Logo** — three-arc segmented ring, procedurally sampled, verified geometry (empty gap sectors)
+- [x] **Launchers** — `.vbs` and `.bat` boot a titled window; `check:launch` measures
+      time to window and proves the render loop is alive and not spinning
 
 ---
 
@@ -74,19 +76,28 @@ First run only: `npm install`.
 - [ ] launch-at-startup toggle
 - [ ] never open the mic without explicit opt-in
 
+### 8. Custom voice packs (not started — no prior work exists)
+- [ ] decide a pack format (SAPI voice, .wav, both?)
+- [ ] import/install flow and a place on disk
+- [ ] a check that the active pack is the one that was selected
+- [ ] decide whether packs are per-user or shipped with the app
+
 ---
 
 ## Known issues
 
-- The launchers pass `.` to Electron with the working directory set to the
-  project root, because passing the directory path itself made Electron treat
-  it as a module to resolve and fail with "Cannot find module" on a path
-  containing spaces.
+- There is no `voicepack/` directory and no custom-voice-pack pipeline. Audio is
+  SAPI (Windows) only; there is nothing to import, and `TODO.md`, `README.md`
+  and `package.json` never referenced one. If a pack format is wanted it has to
+  be designed first, not verified.
 - The `4` o'clock arc holds ~2000 more samples than the other two at the full
   16000-sample capacity (sampler overflow). The gaps are still empty, so it is
   a density imbalance, not a placement error. Low priority.
 - The README screenshot (`assets/screenshot-idle.png`) is a capture, not a
   re-render, and has not been re-checked against the final ring.
+- `backgroundThrottling: false` means the mark keeps animating when the window
+  is not focused. That is deliberate — it is an always-on companion — but it
+  does cost CPU while the window is in the background.
 
 ---
 

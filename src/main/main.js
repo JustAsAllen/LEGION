@@ -127,6 +127,11 @@ function createWindow() {
       sandbox: true,
       webSecurity: true,
       spellcheck: false,
+      // LEGION is an always-on companion with a live mark. Chromium's default
+      // freezes requestAnimationFrame and CSS transitions in an unfocused window,
+      // so the ring stopped breathing and fades stalled half-done whenever the
+      // user clicked away. The mark has to keep running when it is not in front.
+      backgroundThrottling: false,
       devTools: isDev,
       additionalArguments: [
         `--legion-provider=${config.get().ai.provider || 'none'}`,
