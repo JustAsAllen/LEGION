@@ -102,13 +102,37 @@ that recording instead of synthesising those exact words:
 ```
 
 Matching is exact once case and punctuation are folded, so `"On it."`, `"on it"`
-and `"  ON IT! "` all hit the same clip. Anything with no clip is still spoken by
-SAPI as before — there is no wildcard, because a catch-all would play one clip
-for text it does not match, and the mark would appear to say something the app
-never said.
+and `"  ON IT! "` all hit the same clip. Anything with no clip moves down to the
+next voice source — there is no wildcard, because a catch-all would play one
+clip for text it does not match, and the mark would appear to say something the
+app never said.
 
 A working example pack ships with six real clips. `voicepack/README.md` has the
-format; `npm run voicepack:sample` regenerates them.
+format; `npm run voicepack:sample` regenerates them. An installed build also
+reads `resources/voicepack` beside the exe, so you can edit clips without
+repacking.
+
+## Voice sources
+
+LEGION speaks through the first source that can answer:
+
+| # | Source | Notes |
+|---|--------|-------|
+| 1 | **Voice pack** | Your own recording. Instant and always offline. |
+| 2 | **Online voice** | Microsoft Edge neural voices. Sends the text to that service, so it needs a network. |
+| 3 | **Piper** | Local neural TTS. Optional; used only if you install it. |
+| 4 | **System voice** | Windows SAPI. Always available, so speech never fails outright. |
+
+If a source is missing, offline, or errors, LEGION quietly drops to the next one.
+
+Settings → Voice → **Voice source** picks how far down that list it may go:
+
+- **Voice pack, then online voice, then local fallback** — the default
+- **Voice pack, then local fallback (never online)** — nothing leaves the machine
+- **Voice pack only (silence if not recorded)** — prerecorded phrases only
+
+The panel also reads out which sources are actually usable right now, rather
+than listing options that would not work.
 
 ## Performance
 

@@ -154,15 +154,23 @@ const check = async (label, fn) => {
 
   console.log('\nvoice synthesis');
   try {
-    const out = await tts.synthesize('Testing speech output from LEGION.');
+    // Offline mode keeps this check hermetic: the default 'auto' mode would
+    // legitimately route this unrecorded phrase to the online tier and return
+    // MP3, which is correct behaviour but would make a data-layer test depend on
+    // Microsoft's service being up.
+    const out = await tts.synthesize('Testing speech output from LEGION.', { ttsMode: 'offline' });
     if (out.empty || !out.audio) throw new Error('no audio payload: ' + JSON.stringify(Object.keys(out)));
     const buf = Buffer.isBuffer(out.audio) ? out.audio : Buffer.from(out.audio);
     const riff = buf.toString('ascii', 0, 4);
     const wave = buf.toString('ascii', 8, 12);
     if (riff !== 'RIFF' || wave !== 'WAVE') throw new Error('not a RIFF/WAVE payload');
+    // The container has to agree with the format the pipeline claimed, or the
+    // renderer would hand the wrong decoder the wrong bytes.
+    if (out.format !== 'wav') throw new Error(`format says ${out.format} but payload is RIFF/WAVE`);
     ok('wav header', riff + '/' + wave);
     ok('wav bytes', String(buf.length));
     ok('wav durationMs', String(out.durationMs));
+    ok('wav tier', `tier=${out.tier} source=${out.source} format=${out.format}`);
   } catch (e) { bad('tts.synthesize', e); }
 
   require('fs').rmSync(USER_DATA, { recursive: true, force: true });

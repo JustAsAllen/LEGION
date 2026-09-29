@@ -357,6 +357,40 @@ async function main() {
     check('no page overflow', !a.overflow.x && !a.overflow.y, JSON.stringify(a.overflow));
     check('window has a sane viewport', a.inner.w > 800 && a.inner.h > 600, `${a.inner.w}x${a.inner.h}`);
 
+    // The voice-source control decides which synthesis tier runs, so it has to
+    // exist with every mode and default to a valid one. A missing or empty
+    // select would silently leave the pipeline on auto with no way to change it.
+    // The panel is rendered on demand, so it has to be opened first.
+    const voiceUi = await cdp.eval(`(async () => {
+      window.legionApp.togglePanel('settings');
+      // The hint is filled in from a main-process round trip, so give it a beat.
+      const sel = () => document.getElementById('set-tts-mode');
+      for (let i = 0; i < 40 && !sel(); i++) await new Promise((r) => setTimeout(r, 100));
+      const s = sel();
+      if (!s) return { found: false };
+      const hint = document.getElementById('set-pipeline-hint');
+      for (let i = 0; i < 40 && hint && !/Available now|Could not read/.test(hint.textContent); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return {
+        found: true,
+        options: [...s.options].map((o) => o.value),
+        value: s.value,
+        hint: hint ? hint.textContent : null
+      };
+    })()`);
+    check('settings offers every voice source mode',
+      voiceUi.found && voiceUi.options.join(',') === 'auto,offline,pack-only',
+      voiceUi.found ? voiceUi.options.join('/') : '#set-tts-mode missing after opening settings');
+    check('voice source mode starts on a real value',
+      voiceUi.found && voiceUi.options.includes(voiceUi.value),
+      voiceUi.found ? `value=${voiceUi.value}` : 'control missing');
+    // The hint has to be resolved from the main process, not left on its
+    // placeholder text, otherwise the panel is claiming a status it never read.
+    check('settings reports which voice sources are usable',
+      voiceUi.found && voiceUi.hint && /Available now/.test(voiceUi.hint),
+      voiceUi.found ? JSON.stringify(voiceUi.hint) : 'control missing');
+
     // Screenshot + real pixel analysis.
     const SHOT = pickShot();
     const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });

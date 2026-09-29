@@ -31,8 +31,27 @@ const state = {
   problems: []
 };
 
+/**
+ * Where the pack lives.
+ *
+ * Two layouts have to work. Running from source, the pack sits beside the repo
+ * root, one level above src/. Installed, the identical copy is bundled inside
+ * the asar at the same relative spot -- but a user who wants their own voice
+ * drops a folder beside the exe, which is where they can actually edit it
+ * without repackaging. So packaged builds prefer that external folder and fall
+ * back to the read-only one inside the asar.
+ */
 function root() {
-  if (!state.root) state.root = path.resolve(__dirname, '..', '..', '..', 'voicepack');
+  if (state.root) return state.root;
+  const bundled = path.resolve(__dirname, '..', '..', '..', 'voicepack');
+  if (process.resourcesPath) {
+    const external = path.join(process.resourcesPath, 'voicepack');
+    if (fs.existsSync(path.join(external, MANIFEST))) {
+      state.root = external;
+      return state.root;
+    }
+  }
+  state.root = bundled;
   return state.root;
 }
 

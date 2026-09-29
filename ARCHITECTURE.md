@@ -44,8 +44,10 @@ and registers the 44 IPC handlers. The rest are focused modules it calls into.
 | `ai/engine.js` | provider-independent conversation turn |
 | `ai/providers.js` | Anthropic, OpenAI, Ollama adapters |
 | `ai/personality.js` | how replies are phrased |
-| `voice/tts.js` | SAPI synthesis, and the voice pack lookup ahead of it |
+| `voice/tts.js` | the synthesis pipeline, and which tier answered |
 | `voice/voicepack.js` | resolve a phrase to a prerecorded clip |
+| `voice/edge.js` | online neural voices, with availability and last-error state |
+| `voice/piper.js` | optional local neural TTS, probed once and skipped if absent |
 | `voice/stt.js` | Windows speech recognition |
 | `voice/wake.js` | continuous listening and the wake word |
 | `tools/registry.js` | the tool table the model is shown |
@@ -66,6 +68,29 @@ OFFLINE → BOOTING → IDLE ⇄ LISTENING → PROCESSING → SPEAKING → IDLE
 `setState()` is the only way to change state, and the renderer reflects it
 rather than driving it. `SPEAKING` is released by the renderer reporting
 `voice:speechEnd`, because main cannot see when audio playback finishes.
+
+### Voice output
+
+`tts.synthesize()` tries four sources in order and stops at the first that can
+answer. The result carries which one it was (`tier`, `source`, `format`), so the
+UI can say "this sentence was prerecorded" instead of guessing.
+
+1. **Static voice pack** — a recorded clip. Instant, offline, and always first.
+2. **Online voice** (`voice/edge.js`) — Microsoft Edge neural voices, when the
+   phrase is not recorded and the mode allows the network. Returns MP3.
+3. **Piper** (`voice/piper.js`) — local neural TTS, skipped unless an executable
+   and model are configured. Optional, and never required.
+4. **System voice (SAPI)** — the final fallback. Returns WAV.
+
+Two rules make this predictable. A tier that fails returns `null` instead of
+throwing, so an offline machine or a dead service degrades one step rather than
+breaking speech. And `pack-only` means *only*: an unrecorded phrase is silent,
+because silently substituting a different voice would break the promise.
+
+The mode (`voice.ttsMode`) decides how far down the list the pipeline may go:
+`auto` uses all four, `offline` skips the network entirely, `pack-only` stops at
+the first. The renderer plays whatever container comes back — `decodeAudioData`
+handles the pack's WAV and the online tier's MP3 without a format branch.
 
 ### Secrets
 

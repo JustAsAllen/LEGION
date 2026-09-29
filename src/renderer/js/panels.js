@@ -315,12 +315,21 @@ export function settingsPanel(host, app) {
       </div>
     </div>
 
-    <div class="sec">
-      <h3 class="sec-title">Voice</h3>
-      <label class="field">
-        <span>Speech voice</span>
-        <select id="set-voice"><option>Loading...</option></select>
-      </label>
+      <div class="sec">
+        <h3 class="sec-title">Voice</h3>
+        <label class="field">
+          <span>Voice source</span>
+          <select id="set-tts-mode">
+            <option value="auto">Voice pack, then online voice, then local fallback</option>
+            <option value="offline">Voice pack, then local fallback (never online)</option>
+            <option value="pack-only">Voice pack only (silence if not recorded)</option>
+          </select>
+        </label>
+        <p class="hint" id="set-pipeline-hint" style="margin:2px 0 10px">Checking available voices...</p>
+        <label class="field">
+          <span>Speech voice</span>
+          <select id="set-voice"><option>Loading...</option></select>
+        </label>
       <label class="field">
         <span>Speech rate</span>
         <div class="row">
@@ -545,8 +554,25 @@ export function settingsPanel(host, app) {
     }
     const loose = pack.looseFiles.length ? `, ${pack.looseFiles.length} unnamed clip(s)` : '';
     el.textContent = `${pack.name || 'Voice pack'}: ${pack.entries.length} recorded phrase(s)${loose}. ` +
-      'Other replies use the system voice. Anything else is spoken by SAPI.';
+      'Other replies move down to the next available source in the order shown above.';
     if (pack.problems.length) el.textContent += ' Manifest notes: ' + pack.problems.join('; ') + '.';
+  }
+
+  // Read out which tiers are actually usable, so the choice above is informed
+  // rather than a guess. The online tier is only ever claimed when the engine
+  // reports itself available, never just because it is configured.
+  async function loadPipelineInfo() {
+    const el = $('#set-pipeline-hint');
+    if (!el) return;
+    let p = null;
+    try { p = await app.voicePipeline(); } catch (_) { p = null; }
+    if (!p) { el.textContent = 'Could not read the voice pipeline.'; return; }
+    const pack = p.pack && p.pack.exists
+      ? `voice pack (${p.pack.entries.length} clip${p.pack.entries.length === 1 ? '' : 's'})`
+      : 'no voice pack';
+    const online = p.online && p.online.available ? 'online voice ready' : 'online voice unavailable';
+    const piper = p.piper && p.piper.available ? 'Piper ready' : 'Piper not installed';
+    el.textContent = `Available now: ${pack}, ${online}, ${piper}, and the system voice.`;
   }
 
   function fill() {
@@ -574,11 +600,19 @@ export function settingsPanel(host, app) {
     }
 
     loadPackInfo();
+    loadPipelineInfo();
 
     $('#set-rate').value = voice.rate ?? 0;
     $('#set-vol').value = voice.volume ?? 100;
     $('#set-rate-val').textContent = String(voice.rate ?? 0);
     $('#set-vol-val').textContent = String(voice.volume ?? 100);
+    // Only assign a value the select actually has, so an unknown mode stored in
+    // config falls back to the default instead of leaving the control blank.
+    {
+      const modeSel = $('#set-tts-mode');
+      const wanted = voice.ttsMode || 'auto';
+      modeSel.value = [...modeSel.options].some((o) => o.value === wanted) ? wanted : 'auto';
+    }
     $('#set-mic-autostart').checked = !!c.app?.autoListenOnLaunch;
     $('#set-push-to-talk').checked = voice.pushToTalk !== false;
     // Continuous mode is only meaningful when push to talk is off, so its row
@@ -678,7 +712,25 @@ export function settingsPanel(host, app) {
   $('#set-vol').addEventListener('input', (e) => { $('#set-vol-val').textContent = e.target.value; app.audio.setSpeakingGain(Number(e.target.value)); });
   $('#set-vol').addEventListener('change', (e) => save({ voice: { volume: Number(e.target.value) } }));
 
-  $('#set-test-voice').addEventListener('click', () => app.speak('This is LEGION. Voice output is working.'));
+  $('#set-tts-mode').addEventListener('change', (e) => save({ voice: { ttsMode: e.target.value } }));
+
+  // The test phrase is deliberately not a pack phrase, so this button actually
+  // exercises whichever fallback the chosen mode is supposed to reach.
+  $('#set-test-voice').addEventListener('click', (e) => {
+    const hint = e.currentTarget.parentElement.querySelector('.fr-hint');
+    const test = () => app.speak('The reactor is holding at ninety percent capacity.')
+      .then((r) => {
+        const via = r && (r.tier || r.source);
+        if (hint) hint.textContent = `Spoke via ${via || 'unknown'}${r && r.empty ? ' (silent, not recorded)' : ''}`;
+      })
+      .catch((err) => { if (hint) hint.textContent = err.message; });
+    const mode = app.config?.voice?.ttsMode || 'auto';
+    if (mode === 'pack-only') {
+      if (hint) hint.textContent = 'Pack-only mode is silent unless the phrase is recorded. Try "yes" instead.';
+      return;
+    }
+    test();
+  });
   $('#set-test-pack').addEventListener('click', () => speakPackPhrase($('#set-pack-hint')));
 
   $('#set-list-devices').addEventListener('click', async () => {

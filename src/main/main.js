@@ -469,6 +469,7 @@ function registerIpc() {
   handle('voice:voices', async () => tts.listVoices(true));
   handle('voice:pack', async () => tts.voicepack.describe());
   handle('voice:capabilities', async () => stt.capabilities());
+  handle('voice:pipeline', async () => tts.describePipeline(config.get().voice));
   handle('voice:listenStop', async () => ({ stopped: stt.stopActive() }));
   handle('voice:wakeStatus', async () => wake.status());
   handle('voice:wakeStop', async () => wake.stop());
@@ -516,9 +517,15 @@ function registerIpc() {
       const res = await tts.synthesize(text, {
         voice: o.voice || v.voiceName || null,
         rate: o.rate !== undefined ? o.rate : v.rate,
-        volume: o.volume !== undefined ? o.volume : v.volume
+        volume: o.volume !== undefined ? o.volume : v.volume,
+        // The pipeline policy and the online voice come from settings, so the
+        // tier the user picked is the tier that runs.
+        ttsMode: o.ttsMode || v.ttsMode,
+        onlineVoice: o.onlineVoice || v.onlineVoice,
+        piperPath: v.piperPath,
+        piperModel: v.piperModel
       });
-      return { ok: true, format: res.format, sampleRate: res.sampleRate, durationMs: res.durationMs, source: res.source || 'sapi', pack: res.pack || null, phrase: res.phrase || null, audioBase64: res.audio ? res.audio.toString('base64') : null };
+      return { ok: true, format: res.format, sampleRate: res.sampleRate, durationMs: res.durationMs, source: res.source || 'sapi', tier: res.tier || null, mode: res.mode || null, pack: res.pack || null, phrase: res.phrase || null, empty: !!res.empty, reason: res.reason || null, audioBase64: res.audio ? res.audio.toString('base64') : null };
     } catch (err) {
       setError(err);
       return { ok: false, error: { message: err.message, code: err.code || 'E_TTS' } };
@@ -538,8 +545,33 @@ function registerIpc() {
     return { static: stat, load, network: net, disk };
   });
 
-  handle('shell:showItem', async (p) => { shell.showItemInFolder(String(p || '')); return { ok: true }; });
-  handle('shell:openPath', async (p) => ({ error: await shell.openPath(String(p || '')) }));
+  // shell.openPath hands the path to the OS handler, and for an .exe that means
+  // *launching* it. Accepting an arbitrary renderer-supplied string here turned
+  // the renderer into a process launcher: anything that could inject script into
+  // the page could run a binary. Only paths LEGION owns or the user has already
+  // granted are allowed, and they are checked after symlink resolution.
+  const openableRoots = () => [USER_DATA, path.resolve(__dirname, '..', '..')].concat(toolManager.sandbox.describe());
+
+  const assertOpenable = (p) => {
+    const raw = String(p || '').trim();
+    if (!raw) throw new Error('A path is required.');
+    if (raw.indexOf('\0') !== -1) throw new Error('Illegal path.');
+    const abs = path.resolve(raw);
+    const roots = openableRoots();
+    const inside = (c) => roots.some((r) => {
+      const rel = path.relative(r, c);
+      return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    });
+    if (!inside(abs)) throw new Error('That location is not one LEGION can open.');
+    // Resolve links before deciding, or a link inside an allowed root would pass.
+    let real = abs;
+    try { real = fs.realpathSync(abs); } catch (_) { /* may not exist yet */ }
+    if (!inside(real)) throw new Error('That location resolves outside what LEGION can open.');
+    return abs;
+  };
+
+  handle('shell:showItem', async (p) => { shell.showItemInFolder(assertOpenable(p)); return { ok: true }; });
+  handle('shell:openPath', async (p) => ({ error: await shell.openPath(assertOpenable(p)) }));
 
   handle('dialog:confirm', async (opts) => {
     const o = opts || {};

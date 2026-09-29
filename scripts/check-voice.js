@@ -61,6 +61,75 @@ function words(s) { return String(s).toLowerCase().replace(/[^a-z ]/g, ' ').spli
 (async () => {
   console.log('VOICE PIPELINE CHECK');
   console.log(`  platform: ${process.platform}`);
+  /* ---- 0. the tier pipeline itself, before any engine is involved ------ */
+  // These are the load-bearing rules of the hybrid pipeline and they must hold
+  // on any platform, so they are checked first and without touching a network.
+  {
+    const pipe = await tts.describePipeline({});
+    if (pipe.mode === 'auto' && pipe.modes.join(',') === 'auto,offline,pack-only') {
+      ok('the pipeline advertises its three modes', pipe.modes.join(' / '));
+    } else {
+      bad('the pipeline advertises its three modes', JSON.stringify(pipe.modes));
+    }
+    if (pipe.pack.exists && pipe.pack.entries.length > 0 && pipe.sapi.available) {
+      ok('all four tiers report their availability',
+        `pack=${pipe.pack.entries.length} online=${pipe.online.available} piper=${pipe.piper.available} sapi=${pipe.sapi.available}`);
+    } else {
+      bad('all four tiers report their availability', JSON.stringify({ pack: pipe.pack.exists, sapi: pipe.sapi.available }));
+    }
+  }
+
+  // A recorded phrase must come from the pack, whatever the mode. This is the
+  // rule that keeps known phrases instant and free.
+  {
+    const hit = await tts.synthesize('yes', {}).catch((e) => ({ error: e.message }));
+    if (hit && hit.tier === 'voicepack' && hit.source === 'voicepack') {
+      ok('a recorded phrase is served by the pack', `${hit.bytes} bytes, ${hit.format}`);
+    } else {
+      bad('a recorded phrase is served by the pack', JSON.stringify({ tier: hit && hit.tier, source: hit && hit.source, error: hit && hit.error }));
+    }
+  }
+
+  // pack-only must mean pack-only: silence is the correct answer, a fallback to
+  // another engine would quietly break the promise the mode makes.
+  {
+    const r = await tts.synthesize('a phrase that was never recorded', { ttsMode: 'pack-only' }).catch((e) => ({ error: e.message }));
+    if (r && !r.audio && r.empty) {
+      ok('pack-only returns silence for an unrecorded phrase', r.reason || 'no clip');
+    } else {
+      bad('pack-only returns silence for an unrecorded phrase', JSON.stringify({ tier: r && r.tier, source: r && r.source, bytes: r && r.bytes, error: r && r.error }));
+    }
+  }
+
+  // offline must not reach the network, and must still speak.
+  {
+    const r = await tts.synthesize(PHRASE, { ttsMode: 'offline' }).catch((e) => ({ error: e.message }));
+    if (r && r.tier !== 'online') {
+      ok('offline mode never selects the online tier', `tier=${r.tier} source=${r.source}`);
+    } else {
+      bad('offline mode never selects the online tier', JSON.stringify({ tier: r && r.tier, error: r && r.error }));
+    }
+  }
+
+  // The online tier needs the network, so it is opt-in: the default suite stays
+  // hermetic and fast. Set LEGION_LIVE_VOICE=1 to prove the real service.
+  if (process.env.LEGION_LIVE_VOICE === '1') {
+    const r = await tts.synthesize('The reactor is holding at ninety percent capacity.', { ttsMode: 'auto' })
+      .catch((e) => ({ error: e.message }));
+    if (r && r.tier === 'online' && r.audio && r.audio.length > 4) {
+      const sync = r.audio[0] === 0xff && (r.audio[1] & 0xe0) === 0xe0;
+      if (r.format === 'mp3' && sync) {
+        ok('the online tier returns a real MP3 frame', `${r.bytes} bytes, magic=${r.audio.subarray(0, 3).toString('hex')}`);
+      } else {
+        bad('the online tier returns a real MP3 frame', `${r.format} ${r.audio.subarray(0, 3).toString('hex')}`);
+      }
+    } else {
+      bad('the online tier returns a real MP3 frame', JSON.stringify({ tier: r && r.tier, error: r && r.error }));
+    }
+  } else {
+    console.log('  note  set LEGION_LIVE_VOICE=1 to check the online tier against the real service');
+  }
+
   if (process.platform !== 'win32') { skip('SAPI round trip', 'Windows only'); return; }
 
   /* ---- 1. capabilities must tell the truth about the capture device ---- */
@@ -104,7 +173,10 @@ function words(s) { return String(s).toLowerCase().replace(/[^a-z ]/g, ' ').spli
 
   let speech;
   try {
-    speech = await tts.synthesize(PHRASE, { rate: 0, volume: 100 });
+    // Pinned to the offline tier on purpose. This check asserts SAPI's WAVE
+    // output, so it must not be allowed to drift onto the online tier and start
+    // depending on a network round trip (and on Microsoft's mood).
+    speech = await tts.synthesize(PHRASE, { rate: 0, volume: 100, ttsMode: 'offline' });
   } catch (err) {
     bad('synthesise a known sentence', `${err.code || 'E'} ${err.message}`);
     return;

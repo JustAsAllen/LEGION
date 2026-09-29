@@ -85,7 +85,10 @@ function assert(cond, msg) {
   });
 
   await check('an unlisted phrase falls through to SAPI', async () => {
-    const res = await tts.synthesize('The quarterly projection exceeded the revised baseline.', {});
+    // Offline mode keeps this about the pack hand-off, which is what it is
+    // testing. In the default 'auto' mode the online tier would correctly claim
+    // this phrase first and this would stop being a pack assertion.
+    const res = await tts.synthesize('The quarterly projection exceeded the revised baseline.', { ttsMode: 'offline' });
     assert(res.audio && res.audio.length > 0, 'no audio came back for an unlisted phrase');
     assert(res.source === 'sapi', `source was "${res.source}", expected "sapi"`);
     return `fell through to SAPI, ${res.bytes} bytes`;
@@ -137,7 +140,7 @@ function assert(cond, msg) {
   await check('a manifest entry pointing at a missing file degrades to SAPI', async () => {
     const res = await tts.synthesize('On it.', {});
     assert(res.source === 'voicepack', 'the shipped entry should hit');
-    const res2 = await tts.synthesize('Absolutely nothing like the other replies.', {});
+    const res2 = await tts.synthesize('Absolutely nothing like the other replies.', { ttsMode: 'offline' });
     assert(res2.source === 'sapi', 'fallback did not engage');
     return 'a miss does not throw';
   });

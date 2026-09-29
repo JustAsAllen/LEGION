@@ -127,7 +127,10 @@ export class AudioEngine {
   /* ---------------- speech output ---------------- */
 
   /**
-   * Play a base64 WAV produced by the main process and analyse it as it plays.
+   * Play base64 audio produced by the main process and analyse it as it plays.
+   * The container is whatever the pipeline tier returned (WAV from the pack or
+   * SAPI, MP3 from the online tier) and is handed to decodeAudioData untouched,
+   * which is why no format branch is needed here.
    * Returns the measured duration once playback actually finishes.
    */
   async speak(base64) {

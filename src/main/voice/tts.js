@@ -7,8 +7,31 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const voicepack = require('./voicepack');
+const edge = require('./edge');
+const piper = require('./piper');
 
 const pExecFile = promisify(execFile);
+
+/**
+ * The voice pipeline.
+ *
+ * Four tiers, cheapest and most reliable first. Each one is allowed to decline,
+ * and the first that produces audio wins:
+ *
+ *   1. voicepack  a prerecorded clip. Instant, offline, byte-identical every
+ *                 time. A file read, so it also works on macOS and Linux.
+ *   2. edge       a neural voice over the network. Best quality for anything the
+ *                 pack does not cover, but it needs a route to Microsoft's
+ *                 servers and it costs a round trip.
+ *   3. piper      a local neural voice, if the user installed it. Offline, but
+ *                 it is a separate download so it is usually absent.
+ *   4. sapi       the Windows built-in. Always present on Windows, robotic, but
+ *                 it can never fail for want of a network or an install.
+ *
+ * The point of the ordering is that the good-enough tier is tried first and the
+ * fragile ones are only reached when the cheap ones declined. Nothing above
+ * tier 1 is allowed to throw: an offline machine must still speak.
+ */
 
 /**
  * Text to speech via the Windows SAPI engine (System.Speech).
@@ -19,6 +42,17 @@ const pExecFile = promisify(execFile);
  * amplitude rather than a guess.
  */
 
+/**
+ * SAPI (System.Speech) -- tier 4, the last resort on Windows.
+ *
+ * Synthesis writes a real WAV file. We return the audio bytes to the renderer,
+ * which plays them through Web Audio and runs the same analyser used for the
+ * microphone. That means the SPEAKING state is driven by genuine voice
+ * amplitude rather than a guess.
+ *
+ * This block is only reached once the cheaper tiers declined, so the PowerShell
+ * spawn below is the rare path, not the common one.
+ */
 const PS_LIST_VOICES = `
 Add-Type -AssemblyName System.Speech
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
@@ -76,18 +110,63 @@ async function listVoices(force) {
   return available;
 }
 
+/* ------------------------------------------------------------------ */
+/* The pipeline                                                        */
+/* ------------------------------------------------------------------ */
+
+const MODES = Object.freeze({
+  AUTO: 'auto',                 // pack -> online -> piper -> sapi
+  OFFLINE: 'offline',           // pack -> piper -> sapi, never touches the net
+  PACK_ONLY: 'pack-only'        // pack only; silence if there is no clip
+});
+
+function normaliseMode(mode) {
+  const m = String(mode || '').trim().toLowerCase();
+  // Compare against the values, not the keys: the settings file stores
+  // "pack-only", while the constant's key is PACK_ONLY.
+  return Object.values(MODES).includes(m) ? m : MODES.AUTO;
+}
+
 async function synthesize(text, opts) {
   const options = opts || {};
   const clean = String(text || '').replace(/```[\s\S]*?```/g, ' ').replace(/[*_`#>]/g, ' ').replace(/\s+/g, ' ').trim();
   if (!clean) return { audio: null, empty: true };
 
-  // A pack hit comes before the platform check on purpose: a voice pack is
-  // just a file read, so it works on macOS and Linux too, where SAPI cannot run.
-  const pack = await voicepack.resolve(clean).catch(() => null);
-  if (pack) return pack;
+  const mode = normaliseMode(options.ttsMode);
+  const trace = [];
 
+  // 1. the pack. A plain file read, so it is tried before any platform or
+  //    network concern -- it is the only tier that works everywhere.
+  const pack = await voicepack.resolve(clean).catch((err) => { trace.push(`voicepack error: ${err.message}`); return null; });
+  if (pack) return Object.assign({}, pack, { tier: 'voicepack', mode });
+
+  if (mode === MODES.PACK_ONLY) {
+    return { audio: null, empty: true, tier: null, mode, reason: 'No clip for that phrase and the pipeline is set to pack only.' };
+  }
+
+  // 2. the online neural voice. Fails soft by design.
+  if (mode === MODES.AUTO) {
+    const online = await edge.synthesize(clean, { voice: options.onlineVoice || edge.DEFAULT_VOICE }).catch(() => null);
+    if (online) return Object.assign({}, online, { mode });
+    trace.push('online tier unavailable');
+  }
+
+  // 3. a local neural voice, when the user has installed one.
+  const local = await piper.synthesize(clean, { piperPath: options.piperPath, piperModel: options.piperModel }).catch(() => null);
+  if (local) return Object.assign({}, local, { mode });
+  trace.push('piper unavailable');
+
+  // 4. the Windows built-in.
+  return sapi(clean, options, mode, trace);
+}
+
+/**
+ * The SAPI tier, split out so synthesize() reads as a list of tiers rather than
+ * a wall of PowerShell. Only reached when nothing better was available.
+ */
+async function sapi(clean, options, mode, trace) {
   if (process.platform !== 'win32') {
-    const err = new Error('Text-to-speech is only implemented for the Windows SAPI engine on this platform.');
+    const err = new Error('No voice tier is available on this platform: the pack has no clip for that phrase, the online tier needs a network, and Piper is not installed.');
     err.code = 'E_TTS_PLATFORM';
     throw err;
   }
@@ -140,7 +219,24 @@ async function synthesize(text, opts) {
     bytes: buf.length,
     durationMs: estimateWavDurationMs(buf),
     voice: options.voice || null,
-    source: 'sapi'
+    source: 'sapi',
+    tier: 'sapi',
+    mode,
+    trace
+  };
+}
+
+/** Everything the settings panel needs to describe the pipeline honestly. */
+async function describePipeline(opts) {
+  const options = opts || {};
+  const mode = normaliseMode(options.ttsMode);
+  return {
+    mode,
+    modes: Object.values(MODES),
+    pack: await voicepack.describe().catch((e) => ({ error: e.message })),
+    online: mode === MODES.PACK_ONLY ? { available: false, reason: 'pack-only mode' } : edge.describe(),
+    piper: await piper.probe(options).catch((e) => ({ available: false, reason: e.message })),
+    sapi: { available: process.platform === 'win32', platform: process.platform }
   };
 }
 
@@ -154,4 +250,4 @@ function estimateWavDurationMs(buf) {
   } catch (_) { return 0; }
 }
 
-module.exports = { listVoices, synthesize, voicepack };
+module.exports = { listVoices, synthesize, describePipeline, voicepack, edge, piper, MODES };

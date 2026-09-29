@@ -1006,6 +1006,19 @@ class Legion {
     return this._voiceCaps;
   }
 
+  /**
+   * Which synthesis tiers are usable right now. Deliberately not cached: Piper
+   * can be installed and the online tier can come back, so this is re-read
+   * whenever the settings panel opens.
+   */
+  async voicePipeline() {
+    try {
+      return await api.voice.pipeline();
+    } catch (_) {
+      return null;
+    }
+  }
+
   async setVoiceConfig(patch) {
     this.config = { ...(this.config || {}), voice: { ...(this.config?.voice || {}), ...patch } };
     await api.config.set({ voice: patch });

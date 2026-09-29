@@ -30,8 +30,18 @@ const DEFAULTS = Object.freeze({
     micDeviceId: 'default',
     rate: 0,                     // -10 .. 10
     volume: 100,                 // 0 .. 100
-    muted: false                 // microphone muted; analyser stays live so the
+    muted: false,                // microphone muted; analyser stays live so the
                                  // level meter still shows the true input level
+    // The voice pipeline, in tier order: pack (prerecorded) -> online (Edge
+    // neural) -> piper (local neural) -> sapi. ttsMode picks how far down the
+    // list it may go:
+    //   auto      every tier, online included
+    //   offline   never touches the network
+    //   pack-only clips only, silence for anything not recorded
+    ttsMode: 'auto',             // auto | offline | pack-only
+    onlineVoice: 'en-US-AriaNeural',
+    piperPath: '',               // optional explicit piper.exe; '' = probe
+    piperModel: ''               // optional explicit .onnx model
     // speakerDeviceId, pitch, sttEngine and whisperModelPath were removed
     // because nothing ever read them. System.Speech exposes no output-device
     // selection and no Pitch property, and only the SAPI dictation engine is

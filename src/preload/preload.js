@@ -21,7 +21,7 @@ const INVOKE_CHANNELS = [
   'memory:summary', 'memory:session', 'memory:list', 'memory:remember',
   'memory:forget', 'memory:clearSession', 'memory:clearAll', 'memory:export',
   'tools:list', 'tools:invoke', 'tools:confirm',
-  'voice:voices', 'voice:speak', 'voice:speechEnd', 'voice:listen', 'voice:listenStop', 'voice:capabilities', 'voice:pack',
+  'voice:voices', 'voice:speak', 'voice:speechEnd', 'voice:listen', 'voice:listenStop', 'voice:capabilities', 'voice:pipeline', 'voice:pack',
   'voice:wakeStart', 'voice:wakeStop', 'voice:wakeStatus',
   'system:full', 'shell:showItem', 'shell:openPath',
   'dialog:confirm', 'app:openExternal'
@@ -116,6 +116,7 @@ contextBridge.exposeInMainWorld('legion', {
     listen: invoke['voice:listen'],
     listenStop: invoke['voice:listenStop'],
     capabilities: invoke['voice:capabilities'],
+    pipeline: invoke['voice:pipeline'],
     wakeStart: invoke['voice:wakeStart'],
     wakeStop: invoke['voice:wakeStop'],
     wakeStatus: invoke['voice:wakeStatus']
