@@ -51,8 +51,8 @@ class AIEngine {
   async respond(userText) {
     const cfg = this.config;
     const st = this.status();
-    if (!st.ready) {
-      throw new ToolError(st.reason || 'AI connection unavailable.', st.provider === 'none' ? 'E_NO_PROVIDER' : 'E_NO_KEY');
+    if (!st.ready && st.provider !== 'none') {
+      throw new ToolError(st.reason || 'AI connection unavailable.', 'E_NO_KEY');
     }
 
     this.deps.memory.appendMessage('user', userText);
