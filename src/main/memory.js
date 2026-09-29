@@ -31,6 +31,16 @@ function redact(text) {
   return out;
 }
 
+/**
+ * Build a redaction policy from a boolean.
+ *
+ * Exported so the setting can be exercised directly in a check instead of
+ * only being observed through a live conversation.
+ */
+function makeRedactor(on) {
+  return on === false ? (text) => String(text) : redact;
+}
+
 class MemoryStore {
   constructor(dir, settings) {
     this.dir = dir;
@@ -43,6 +53,12 @@ class MemoryStore {
   }
 
   get config() { return this.settings.get().memory; }
+
+  /**
+   * Redaction policy, read live so a settings change applies to the next write
+   * instead of the next launch. The setting used to gate nothing at all.
+   */
+  get clean() { return makeRedactor(this.settings.get().privacy.redactSecrets); }
 
   load() {
     try {
@@ -61,7 +77,7 @@ class MemoryStore {
 
   appendMessage(role, text, extra) {
     if (!this.config.enabled) return null;
-    const msg = { role, text: redact(text), at: new Date().toISOString() };
+    const msg = { role, text: this.clean(text), at: new Date().toISOString() };
     if (extra) Object.assign(msg, extra);
     this.session.push(msg);
     const cap = this.config.maxSessionMessages;
@@ -90,7 +106,7 @@ class MemoryStore {
     if (!this.config.enabled) return { stored: false, reason: 'memory_disabled' };
     if (!this.config.longTermEnabled) return { stored: false, reason: 'long_term_disabled' };
     if (!text || !String(text).trim()) return { stored: false, reason: 'empty' };
-    const clean = redact(text).trim().slice(0, 2000);
+    const clean = this.clean(text).trim().slice(0, 2000);
     const existing = this.longTerm.find((m) => m.text === clean);
     if (existing) return { stored: false, reason: 'duplicate', id: existing.id };
     const entry = {
@@ -141,4 +157,4 @@ class MemoryStore {
   }
 }
 
-module.exports = { MemoryStore, redact };
+module.exports = { MemoryStore, redact, makeRedactor };

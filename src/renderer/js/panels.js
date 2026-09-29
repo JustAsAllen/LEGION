@@ -377,6 +377,19 @@ export function settingsPanel(host, app) {
           <span class="t-hint">Keeps the microphone open and listens again after each reply, so you can talk back and forth without touching the keyboard. It only turns on when push to talk is off.</span>
         </span>
       </label>
+      <label class="toggle" style="margin-top:14px">
+        <input type="checkbox" id="set-wake" />
+        <span class="sw"></span>
+        <span class="t-body">
+          <span class="t-label">Wake word</span>
+          <span class="t-hint" id="set-wake-hint">Listens for a phrase and answers without a key. Off by default, because it holds the microphone open.</span>
+        </span>
+      </label>
+      <label class="field" id="set-wake-phrase-field" hidden>
+        <span>Wake phrase</span>
+        <input type="text" id="set-wake-phrase" placeholder="hey legion" spellcheck="false" />
+        <span class="hint" id="set-wake-state">Stopped.</span>
+      </label>
     </div>
 
     <div class="sec">
@@ -423,6 +436,14 @@ export function settingsPanel(host, app) {
           <span class="t-hint">Calm particle drift, scanning and blinking. The face still responds to your voice.</span>
         </span>
       </label>
+      <label class="toggle">
+        <input type="checkbox" id="set-waveform" />
+        <span class="sw"></span>
+        <span class="t-body">
+          <span class="t-label">Show audio waveform</span>
+          <span class="t-hint">Draws the measured spectrum under the face. Turn it off for a quieter interface; the face still reacts to your voice.</span>
+        </span>
+      </label>
     </div>
 
     <div class="sec">
@@ -457,6 +478,14 @@ export function settingsPanel(host, app) {
         <span class="t-body">
           <span class="t-label">Launch LEGION at sign-in</span>
           <span class="t-hint">Starts hidden in the tray when you sign in to Windows.</span>
+        </span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="set-redact" />
+        <span class="sw"></span>
+        <span class="t-body">
+          <span class="t-label">Redact secrets in stored conversations</span>
+          <span class="t-hint">Strips API keys, tokens and card numbers before a message is written to the local transcript or long-term memory. On by default.</span>
         </span>
       </label>
       <div class="row wrap" style="margin-top:6px">
@@ -511,9 +540,16 @@ export function settingsPanel(host, app) {
     }
     if (voice.micDeviceId && [...micSel.options].some((o) => o.value === voice.micDeviceId)) micSel.value = voice.micDeviceId;
 
+    // The wake phrase field only makes sense while the toggle is on, and the
+    // live state line has to reflect the real listener, not the saved flag.
+    $('#set-wake').checked = !!voice.wakeWordEnabled;
+    $('#set-wake-phrase-field').hidden = !voice.wakeWordEnabled;
+    if (document.activeElement !== $('#set-wake-phrase')) $('#set-wake-phrase').value = voice.wakeWord || 'hey legion';
+
     $('#set-quality').value = c.visual?.quality || 'high';
     $('#set-adaptive').checked = c.visual?.adaptiveQuality !== false;
     $('#set-reduced').checked = !!c.visual?.reducedMotion;
+    $('#set-waveform').checked = c.visual?.showWaveform !== false;
     for (const b of host.querySelectorAll('#set-themes .chip')) b.classList.toggle('is-on', b.dataset.theme === (c.ui?.theme || 'abyss'));
     for (const b of host.querySelectorAll('#set-panelpos .chip')) b.classList.toggle('is-on', b.dataset.pos === (c.ui?.panelPosition || 'right'));
 
@@ -521,6 +557,7 @@ export function settingsPanel(host, app) {
     $('#set-allow-web').checked = c.tools?.allowWeb !== false;
     $('#set-allow-dev').checked = !!c.tools?.allowDev;
     $('#set-startup').checked = !!c.app?.launchAtStartup;
+    $('#set-redact').checked = c.privacy?.redactSecrets !== false;
 
     $('#set-key').value = '';
     refreshKeyHint();
@@ -660,6 +697,55 @@ export function settingsPanel(host, app) {
     }
   });
 
+  // Wake word. The listener lives in the main process, so a config write is
+  // what actually starts and stops it; the state line reports the real result
+  // of that write rather than the checkbox the user just clicked.
+  const wakeState = (text, cls) => {
+    const el = $('#set-wake-state');
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'hint' + (cls ? ' ' + cls : '');
+  };
+
+  async function reportWakeState() {
+    let st = null;
+    try { st = await app.voice.wakeStatus(); } catch (_) { /* keep the last text */ }
+    if (!st) return;
+    if (!st.supported) { wakeState('Unavailable: the wake word listener requires Windows.', 'bad'); return; }
+    if (!st.wanted) { wakeState('Stopped.', ''); return; }
+    if (st.suspended) { wakeState('Paused while capturing or speaking.', ''); return; }
+    if (st.running) { wakeState(`Listening for "${st.phrase}".`, 'ok'); return; }
+    wakeState('Starting...', '');
+  }
+
+  $('#set-wake').addEventListener('change', async (e) => {
+    const on = e.target.checked;
+    $('#set-wake-phrase-field').hidden = !on;
+    if (on) {
+      const phrase = $('#set-wake-phrase').value.trim();
+      if (!phrase) { wakeState('Set a wake phrase first.', 'bad'); e.target.checked = false; $('#set-wake-phrase-field').hidden = true; return; }
+    }
+    const r = await save({ voice: { wakeWordEnabled: on } });
+    if (!r.ok) { app.toast('error', 'Could not save wake word', r.error); e.target.checked = !on; return; }
+    if (on) app.toast('ok', 'Wake word on', `Say "${($('#set-wake-phrase').value || '').trim()}" when you want LEGION's attention.`);
+    await reportWakeState();
+  });
+
+  $('#set-wake-phrase').addEventListener('change', async (e) => {
+    const phrase = e.target.value.trim();
+    if (!phrase) { wakeState('A wake phrase cannot be empty.', 'bad'); return; }
+    const r = await save({ voice: { wakeWord: phrase } });
+    if (!r.ok) { app.toast('error', 'Could not save wake phrase', r.error); return; }
+    if (app.config?.voice?.wakeWordEnabled) {
+      // Restarting on a new phrase is the main process's job, since it owns
+      // the recogniser; the status line then shows the new phrase listening.
+      await app.voice.wakeStart();
+    }
+    await reportWakeState();
+  });
+
+  reportWakeState();
+
   $('#set-quality').addEventListener('change', async (e) => {
     const q = e.target.value;
     const r = await save({ visual: { quality: q } });
@@ -668,6 +754,7 @@ export function settingsPanel(host, app) {
   });
   $('#set-adaptive').addEventListener('change', (e) => save({ visual: { adaptiveQuality: e.target.checked } }));
   $('#set-reduced').addEventListener('change', (e) => save({ visual: { reducedMotion: e.target.checked } }));
+  $('#set-waveform').addEventListener('change', (e) => save({ visual: { showWaveform: e.target.checked } }));
 
   host.querySelector('#set-themes').addEventListener('click', async (e) => {
     const b = e.target.closest('[data-theme]');
@@ -687,6 +774,7 @@ export function settingsPanel(host, app) {
   });
 
   $('#set-store-history').addEventListener('change', (e) => save({ privacy: { storeConversations: e.target.checked } }));
+  $('#set-redact').addEventListener('change', (e) => save({ privacy: { redactSecrets: e.target.checked } }));
   $('#set-allow-web').addEventListener('change', (e) => save({ tools: { allowWeb: e.target.checked } }));
   $('#set-allow-dev').addEventListener('change', (e) => save({ tools: { allowDev: e.target.checked } }));
   $('#set-startup').addEventListener('change', (e) => save({ app: { launchAtStartup: e.target.checked } }));

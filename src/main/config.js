@@ -28,14 +28,15 @@ const DEFAULTS = Object.freeze({
     wakeWordEnabled: false,
     wakeWord: 'hey legion',
     micDeviceId: 'default',
-    speakerDeviceId: 'default',
     rate: 0,                     // -10 .. 10
     volume: 100,                 // 0 .. 100
-    pitch: 0,                    // -10 .. 10
-    muted: false,                // microphone muted; analyser stays live so the
+    muted: false                 // microphone muted; analyser stays live so the
                                  // level meter still shows the true input level
-    sttEngine: 'sapi',           // the only implemented engine is Windows SAPI
-    whisperModelPath: ''
+    // speakerDeviceId, pitch, sttEngine and whisperModelPath were removed
+    // because nothing ever read them. System.Speech exposes no output-device
+    // selection and no Pitch property, and only the SAPI dictation engine is
+    // implemented. Keeping unread keys in a config file is a setting that lies
+    // about what the application can do.
   },
 
   visual: {
@@ -90,8 +91,9 @@ const DEFAULTS = Object.freeze({
 
   privacy: {
     storeConversations: true,
-    telemetry: false,
     redactSecrets: true
+    // telemetry was removed. LEGION has never sent a usage ping, and leaving a
+    // switch for it implied a collection path that does not exist.
   }
 });
 
@@ -114,6 +116,31 @@ function deepMerge(base, patch) {
 
 function clone(v) { return JSON.parse(JSON.stringify(v)); }
 
+/**
+ * Drop any key that is not in the current defaults.
+ *
+ * deepMerge copies everything in a saved file over the defaults, so settings
+ * that have been removed from the app kept coming back on every launch: a
+ * profile written before speakerDeviceId or telemetry were deleted still
+ * carried them, and the interface kept reading them as if they were live.
+ * Pruning on load means the file can only ever describe what the app supports.
+ */
+function prune(value, base) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const out = Array.isArray(base) ? value.slice() : {};
+  for (const key of Object.keys(value)) {
+    if (!Object.prototype.hasOwnProperty.call(base, key)) continue;
+    const b = base[key];
+    const v = value[key];
+    if (b && typeof b === 'object' && !Array.isArray(b) && v && typeof v === 'object' && !Array.isArray(v)) {
+      out[key] = prune(v, b);
+    } else {
+      out[key] = v;
+    }
+  }
+  return out;
+}
+
 class ConfigStore {
   constructor(dir) {
     this.dir = dir;
@@ -127,7 +154,10 @@ class ConfigStore {
     try {
       const raw = fs.readFileSync(this.file, 'utf8');
       const parsed = JSON.parse(raw);
-      this.data = deepMerge(clone(DEFAULTS), parsed);
+      this.data = prune(deepMerge(clone(DEFAULTS), parsed), DEFAULTS);
+      // The pruned result is written back so the retired keys leave the file
+      // instead of only being ignored in memory on this run.
+      this.saveNow();
     } catch (err) {
       if (err && err.code !== 'ENOENT') {
         try {
@@ -151,7 +181,7 @@ class ConfigStore {
       if (!allowed.has(key)) continue;
       safe[key] = partial[key];
     }
-    this.data = deepMerge(this.data, safe);
+    this.data = prune(deepMerge(this.data, safe), DEFAULTS);
     this.scheduleSave();
     return this.data;
   }
@@ -185,4 +215,4 @@ class ConfigStore {
   }
 }
 
-module.exports = { ConfigStore, DEFAULTS, deepMerge, clone };
+module.exports = { ConfigStore, DEFAULTS, deepMerge, prune, clone };

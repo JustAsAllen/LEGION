@@ -12,7 +12,8 @@ const missing = uniq.filter(c => !main.includes("'" + c + "'"));
 
 // IPC event channels (one-way main -> renderer)
 const EVENTS = ['state', 'metrics', 'ai:event', 'tool:confirmation',
-  'timer:fired', 'app:ready', 'window:focus', 'ui:open-panel', 'shortcut:activate'];
+  'timer:fired', 'app:ready', 'window:focus', 'ui:open-panel', 'shortcut:activate',
+  'voice:wake'];
 const evMissing = EVENTS.filter(c => !main.includes("'" + c + "'"));
 
 console.log('invoke channels in preload:', uniq.length);

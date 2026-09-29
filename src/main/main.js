@@ -25,6 +25,7 @@ const { ToolManager } = require('./tools');
 const { AIEngine } = require('./ai/engine');
 const tts = require('./voice/tts');
 const stt = require('./voice/stt');
+const wake = require('./voice/wake');
 const metrics = require('./system/metrics');
 const si = require('systeminformation');
 
@@ -299,6 +300,33 @@ function handle(channel, fn) {
   });
 }
 
+/**
+ * Bring the wake word listener in line with the saved setting.
+ *
+ * The setting existed from the start but nothing read it, so a profile that had
+ * "wake word" switched on was in fact doing push to talk only. The listener is
+ * owned by main so it survives a renderer reload and so the input device is
+ * arbitrated in one place.
+ */
+function syncWakeListener() {
+  const v = config.get().voice || {};
+  const phrase = String(v.wakeWord || '').trim();
+  if (!v.wakeWordEnabled || !phrase) {
+    wake.stop();
+    return wake.status();
+  }
+  const res = wake.start({
+    phrase,
+    onWake: (hit) => {
+      send('voice:wake', { phrase: hit.matched, command: hit.command, heard: hit.heard, at: Date.now() });
+    },
+    onError: (err) => {
+      send('voice:wake', { error: { code: err.code, message: err.message }, at: Date.now() });
+    }
+  });
+  return wake.status();
+}
+
 function registerIpc() {
   handle('app:info', async () => ({
     version: app.getVersion(),
@@ -343,12 +371,14 @@ function registerIpc() {
     config.patch(patch || {});
     toolManager.syncSandbox();
     applyStartupSetting();
+    syncWakeListener();
     return { settings: config.get(), sandboxRoots: toolManager.sandbox.describe() };
   });
 
   handle('config:reset', async () => {
     config.reset();
     toolManager.syncSandbox();
+    syncWakeListener();
     return { settings: config.get() };
   });
 
@@ -434,9 +464,15 @@ function registerIpc() {
   handle('voice:voices', async () => tts.listVoices(true));
   handle('voice:capabilities', async () => stt.capabilities());
   handle('voice:listenStop', async () => ({ stopped: stt.stopActive() }));
+  handle('voice:wakeStatus', async () => wake.status());
+  handle('voice:wakeStop', async () => wake.stop());
+  handle('voice:wakeStart', async () => syncWakeListener());
   handle('voice:listen', async (opts) => {
     const o = opts || {};
     setState('LISTENING');
+    // The wake listener holds the same default input device, and System.Speech
+    // permits only one recogniser per device, so it stands down for the capture.
+    wake.suspend();
     try {
       // stt.listen() returns { stop(), promise }; the result lives on .promise.
       // Awaiting the wrapper itself resolved to the wrapper, so res.ok was
@@ -458,6 +494,8 @@ function registerIpc() {
     } catch (err) {
       setError(err);
       return { ok: false, error: { message: err.message, code: err.code || 'E_STT' } };
+    } finally {
+      wake.resume();
     }
   });
 
@@ -465,6 +503,9 @@ function registerIpc() {
     const o = opts || {};
     const v = config.get().voice;
     setState('SPEAKING');
+    // Synthesis is captured from the same input device, so the wake listener
+    // must not be running or LEGION answers its own voice.
+    wake.suspend();
     try {
       const res = await tts.synthesize(text, {
         voice: o.voice || v.voiceName || null,
@@ -476,6 +517,14 @@ function registerIpc() {
       setError(err);
       return { ok: false, error: { message: err.message, code: err.code || 'E_TTS' } };
     }
+  });
+
+  // Playback happens in the renderer, so main cannot see when the audio ends.
+  // The renderer reports it, which is what releases the input device again.
+  handle('voice:speechEnd', async () => {
+    wake.resume();
+    if (currentState === 'SPEAKING') setState('IDLE');
+    return { ok: true };
   });
 
   handle('system:full', async () => {
@@ -564,6 +613,9 @@ if (!app.requestSingleInstanceLock() && !isDev) {
     applyStartupSetting();
     startMetrics();
     tts.listVoices();
+    // Honour a saved wake word setting on launch, not only after the user
+    // toggles it in Settings.
+    syncWakeListener();
 
     const onboarded = config.get().onboarded;
     const playBoot = config.get().app.playBootAnimation && onboarded;
@@ -592,6 +644,10 @@ if (!app.requestSingleInstanceLock() && !isDev) {
     quitting = true;
     stopMetrics();
     config.saveNow();
+    // The wake recogniser is a real child process holding the microphone; it
+    // has to die with the app or it outlives LEGION and keeps the device busy.
+    wake.stop();
+    stt.stopActive();
     try { globalShortcut.unregisterAll(); } catch (_) { /* ignore */ }
     toolManager.rejectAll('shutdown');
   });

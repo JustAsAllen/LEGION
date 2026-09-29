@@ -16,6 +16,7 @@ export class Waveform {
     this.idle = 0;
     this.mode = 'idle';
     this.accent = [53, 200, 255];
+    this.visible = true;
     this.dpr = Math.min(2, window.devicePixelRatio || 1);
     this.resize();
   }
@@ -30,7 +31,20 @@ export class Waveform {
 
   setAccent(rgb) { this.accent = rgb; }
 
+  /**
+   * The `showWaveform` setting reached nothing, so the strip was always drawn.
+   * When it is off the canvas is hidden and the draw call is skipped entirely
+   * rather than clearing a 520x64 surface every frame for no visible result.
+   */
+  setVisible(on) {
+    const show = on !== false;
+    this.visible = show;
+    this.canvas.hidden = !show;
+    if (!show && this.ctx) this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+  }
+
   draw(state, dt) {
+    if (this.visible === false) return;
     this.resize();
     const g = this.ctx;
     const W = this.canvas.width;

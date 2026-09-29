@@ -213,7 +213,7 @@ export class FirstRun {
       ai: { provider, model: d.model, baseUrl: d.baseUrl },
       voice: { voiceName: d.voiceName, pushToTalk: true, enabled: true },
       memory: { enabled: true, longTermEnabled: d.longTerm, maxSessionMessages: 200 },
-      privacy: { storeConversations: d.storeHistory, telemetry: false, redactSecrets: true },
+      privacy: { storeConversations: d.storeHistory, redactSecrets: true },
       visual: { quality: d.quality, reducedMotion: d.reducedMotion, adaptiveQuality: true, showScanlines: true, showWaveform: true },
       app: { autoListenOnLaunch: d.autoListen, closeToTray: true, playBootAnimation: true }
     };

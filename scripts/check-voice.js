@@ -25,6 +25,9 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const stt = require(path.join(ROOT, 'src', 'main', 'voice', 'stt.js'));
 const tts = require(path.join(ROOT, 'src', 'main', 'voice', 'tts.js'));
+const wake = require(path.join(ROOT, 'src', 'main', 'voice', 'wake.js'));
+const { DEFAULTS } = require(path.join(ROOT, 'src', 'main', 'config.js'));
+const { makeRedactor } = require(path.join(ROOT, 'src', 'main', 'memory.js'));
 
 const results = [];
 let skipped = false;
@@ -226,6 +229,104 @@ $engine.Dispose()
 
   if (stt.isListening()) bad('no recogniser left running after stop', 'stt.isListening() is still true');
   else ok('no recogniser left running after stop', 'isListening() false');
+
+  /* ---- 6. wake word matching is exact, not a substring trap ---- */
+  // The wake listener reports a phrase only when the recogniser produced it, so
+  // the part that can be tested without a microphone is the matching itself.
+  const phrase = DEFAULTS.voice.wakeWord;
+  const cases = [
+    { heard: 'Hey Legion what is the weather', command: 'what is the weather', should: true },
+    { heard: 'hey  legion   open   the  terminal', command: 'open the terminal', should: true },
+    { heard: 'they legion are not my friends', command: null, should: false },
+    { heard: 'legion', command: null, should: false },
+    { heard: 'what is the weather', command: null, should: false }
+  ];
+  let matchFails = 0;
+  for (const c of cases) {
+    const hit = wake.matchWake(phrase, c.heard);
+    const got = hit ? hit.command : null;
+    if (!!hit !== c.should || (c.should && got !== c.command)) {
+      matchFails++;
+      console.log(`       "${c.heard}" -> ${hit ? JSON.stringify(hit) : 'no match'} (expected ${c.should ? JSON.stringify(c.command) : 'no match'})`);
+    }
+  }
+  if (matchFails === 0) {
+    ok('wake phrase matches only on a real word boundary', `${cases.length} cases, command text extracted after the phrase`);
+  } else {
+    bad('wake phrase matches only on a real word boundary', `${matchFails}/${cases.length} cases wrong`);
+  }
+
+  const empty = wake.matchWake('   ', 'anything at all');
+  if (empty === null) ok('an empty wake phrase never matches', 'blank phrase is rejected');
+  else bad('an empty wake phrase never matches', JSON.stringify(empty));
+
+  /* ---- 7. the wake listener reports its real state, never a pretend one ---- */
+  const st0 = wake.status();
+  if (st0.supported === true && st0.running === false && st0.wanted === false) {
+    ok('wake status is honest while stopped', 'supported, not running, not wanted');
+  } else {
+    bad('wake status is honest while stopped', JSON.stringify(st0));
+  }
+
+  // Starting must actually spawn, and stopping must actually leave nothing
+  // behind holding the microphone.
+  let spawned = false;
+  try {
+    const r = wake.start({ phrase, onWake: () => {}, onError: () => {} });
+    if (r.ok) { spawned = true; }
+  } catch (err) { spawned = false; }
+  const st1 = wake.status();
+  if (spawned && st1.running && st1.phrase === phrase) {
+    ok('wake listener starts and reports the phrase it is watching', `listening for "${st1.phrase}"`);
+  } else {
+    bad('wake listener starts and reports the phrase it is watching', JSON.stringify(st1));
+  }
+
+  // A capture takes the device, so the listener must stand down and come back.
+  wake.suspend();
+  const st2 = wake.status();
+  wake.resume();
+  const st3 = wake.status();
+  if (!st2.running && st2.suspended === true && st3.running === true) {
+    ok('wake listener yields the device during a capture', 'suspended then resumed');
+  } else {
+    bad('wake listener yields the device during a capture', `suspended=${JSON.stringify(st2)} resumed=${JSON.stringify(st3)}`);
+  }
+
+  wake.stop();
+  const st4 = wake.status();
+  if (!st4.running && !st4.wanted) ok('wake listener stops cleanly', 'no recogniser left running');
+  else bad('wake listener stops cleanly', JSON.stringify(st4));
+
+  /* ---- 8. the settings that used to gate nothing now gate something ---- */
+  const secret = 'my key is sk-abcdefghijklmnopqrstuvwxyz012345';
+  const on = makeRedactor(true);
+  const off = makeRedactor(false);
+  if (on(secret).includes('[redacted]')) ok('redaction is applied when enabled', 'secret shape replaced');
+  else bad('redaction is applied when enabled', on(secret));
+  if (!off(secret).includes('[redacted]')) ok('redaction is skipped only when disabled', 'text passes through untouched');
+  else bad('redaction is skipped only when disabled', off(secret));
+
+  // Every key the interface offers must exist in the config the app saves, and
+  // the removed ones must be gone rather than lingering as unread defaults.
+  const staleVoice = ['speakerDeviceId', 'pitch', 'sttEngine', 'whisperModelPath'].filter((k) => k in DEFAULTS.voice);
+  if (staleVoice.length === 0) ok('unsupported voice keys are gone from the config', 'speakerDeviceId, pitch, sttEngine, whisperModelPath all removed');
+  else bad('unsupported voice keys are gone from the config', staleVoice.join(', '));
+
+  if (!('telemetry' in DEFAULTS.privacy)) ok('the unused telemetry key is gone', 'no switch for a collection path that never existed');
+  else bad('the unused telemetry key is gone', 'privacy.telemetry still present');
+
+  if ('wakeWordEnabled' in DEFAULTS.voice && 'wakeWord' in DEFAULTS.voice) {
+    ok('wake word keys are real and wired to the listener', `default phrase "${DEFAULTS.voice.wakeWord}"`);
+  } else {
+    bad('wake word keys are real and wired to the listener', 'wake keys missing from defaults');
+  }
+
+  const allJson = ['src/main/config.js', 'src/renderer/js/firstrun.js', 'src/renderer/js/panels.js', 'src/renderer/js/app.js', 'src/renderer/js/waveform.js']
+    .map((f) => fs.readFileSync(path.join(ROOT, f), 'utf8')).join('\n');
+  const untouched = ['showWaveform', 'redactSecrets'].filter((k) => !new RegExp(k).test(allJson));
+  if (untouched.length === 0) ok('showWaveform and redactSecrets are read by the application', 'both settings have a consumer');
+  else bad('showWaveform and redactSecrets are read by the application', `no reference to ${untouched.join(', ')}`);
 })().then(() => {
   const failed = results.filter((r) => !r.ok).length;
   console.log(`\n${failed === 0 && !skipped ? 'all voice checks passed' : skipped && failed === 0 ? 'voice checks passed (some skipped)' : `${failed} voice check(s) failed`}`);

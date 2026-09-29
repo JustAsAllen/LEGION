@@ -21,14 +21,16 @@ const INVOKE_CHANNELS = [
   'memory:summary', 'memory:session', 'memory:list', 'memory:remember',
   'memory:forget', 'memory:clearSession', 'memory:clearAll', 'memory:export',
   'tools:list', 'tools:invoke', 'tools:confirm',
-  'voice:voices', 'voice:speak', 'voice:listen', 'voice:listenStop', 'voice:capabilities',
+  'voice:voices', 'voice:speak', 'voice:speechEnd', 'voice:listen', 'voice:listenStop', 'voice:capabilities',
+  'voice:wakeStart', 'voice:wakeStop', 'voice:wakeStatus',
   'system:full', 'shell:showItem', 'shell:openPath',
   'dialog:confirm', 'app:openExternal'
 ];
 
 const EVENT_CHANNELS = [
   'state', 'metrics', 'ai:event', 'tool:confirmation',
-  'timer:fired', 'app:ready', 'window:focus', 'ui:open-panel', 'shortcut:activate'
+  'timer:fired', 'app:ready', 'window:focus', 'ui:open-panel', 'shortcut:activate',
+  'voice:wake'
 ];
 
 const invoke = {};
@@ -109,9 +111,13 @@ contextBridge.exposeInMainWorld('legion', {
   voice: {
     voices: invoke['voice:voices'],
     speak: invoke['voice:speak'],
+    speechEnd: invoke['voice:speechEnd'],
     listen: invoke['voice:listen'],
     listenStop: invoke['voice:listenStop'],
-    capabilities: invoke['voice:capabilities']
+    capabilities: invoke['voice:capabilities'],
+    wakeStart: invoke['voice:wakeStart'],
+    wakeStop: invoke['voice:wakeStop'],
+    wakeStatus: invoke['voice:wakeStatus']
   },
   system: {
     full: invoke['system:full'],

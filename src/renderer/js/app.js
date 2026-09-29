@@ -263,6 +263,7 @@ class Legion {
     this.stage?.setAdaptive(v.adaptiveQuality !== false);
     this.stage?.setReducedMotion(!!v.reducedMotion);
     this.stage?.setScanlines(v.showScanlines !== false);
+    this.wave.setVisible(v.showWaveform !== false);
     document.body.classList.toggle('reduced-motion', !!v.reducedMotion);
 
     document.getElementById('firstrun').hidden = true;
@@ -424,8 +425,33 @@ class Legion {
 
     api.on('timer:fired', (t) => this.#onTimer(t));
 
+    api.on('voice:wake', (p) => this.#onWake(p));
+
     setInterval(() => this.#paintStatus(), 1500);
     setInterval(() => this.#pollFullMetrics(), 9000);
+  }
+
+  /**
+   * The wake recogniser heard the phrase. Whatever followed it in the same
+   * utterance is the command, so no second capture is needed; an empty
+   * remainder means the user only said the wake phrase and is now expected to
+   * continue, which is the behaviour the spec describes.
+   */
+  #onWake(p) {
+    if (!p) return;
+    if (p.error) {
+      this.toast('error', 'Wake word unavailable', p.error.message);
+      return;
+    }
+    const command = String(p.command || '').trim();
+    this.store.setCaption(command ? command : 'Listening…', true);
+    this.#setChipMic(true);
+    if (command) {
+      this.store.setCaption(command, false);
+      this.sendText(command);
+    } else {
+      this.#listenOnce({ continuous: true });
+    }
   }
 
   async #pollFullMetrics() {
@@ -735,21 +761,35 @@ class Legion {
     if (!res || !res.ok) {
       const msg = res?.error?.message || 'Speech synthesis failed.';
       this.store.setState('ERROR', msg);
+      this.#releaseSpeechDevice();
       return { ok: false, error: msg };
     }
-    if (!res.audioBase64) return { ok: true, silent: true };
+    if (!res.audioBase64) { this.#releaseSpeechDevice(); return { ok: true, silent: true }; }
 
     this.store.setState('SPEAKING');
     const play = await this.audio.speak(res.audioBase64);
     if (!play.ok) {
       this.store.setState('IDLE');
+      this.#releaseSpeechDevice();
       return { ok: false, error: 'Could not play the generated audio.' };
     }
     this.audio.setMuted(this.config?.voice?.muted === true);
     await play.promise;
     this.audio.stopSpeaking();
     if (this.store.state === 'SPEAKING') this.store.setState('IDLE');
+    this.#releaseSpeechDevice();
     return { ok: true, durationMs: play.durationMs };
+  }
+
+  /**
+   * Main suspends the wake listener for the whole of a synthesis because the
+   * recogniser reads the same input device. Playback is renderer-side, so main
+   * cannot see it end; this is the signal that hands the device back.
+   */
+  #releaseSpeechDevice() {
+    Promise.resolve()
+      .then(() => api.voice.speechEnd())
+      .catch(() => {});
   }
 
   /* ══════════════════════════════════════════════════════════
@@ -876,6 +916,8 @@ class Legion {
     this.stage?.setAdaptive(c?.visual?.adaptiveQuality !== false);
     this.stage?.setReducedMotion(!!c?.visual?.reducedMotion);
     this.stage?.setScanlines(c?.visual?.showScanlines !== false);
+    this.wave.setVisible(c?.visual?.showWaveform !== false);
+    this.audio.setMuted(!!c?.voice?.muted);
   }
 
   async refreshMemory() {
@@ -936,6 +978,12 @@ class Legion {
   }
 
   async listMicDevices() { return this.audio.listInputs(); }
+
+  /**
+   * The voice bridge, held on the instance so a check can substitute it.
+   * contextBridge freezes the object on window, so it cannot be patched there.
+   */
+  get voice() { return this.apiVoice; }
 
   /** What the recogniser can actually do, for honest UI copy. */
   async voiceCaps() {

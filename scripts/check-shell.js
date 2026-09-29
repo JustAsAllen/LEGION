@@ -533,6 +533,103 @@ async function main() {
       persisted.pushToTalk === true && persisted.continuous === false,
       JSON.stringify(persisted));
 
+    /* ---- 9. settings that used to reach nothing ---- */
+    // showWaveform, redactSecrets and the wake word were all writable from the
+    // interface and read by nothing. Assert each one now moves real state.
+    await cdp.eval(`(async () => { window.legionApp.togglePanel('settings'); return true; })()`);
+    await sleep(900);
+
+    const toggles = await cdp.eval(`(async () => {
+      const a = window.legionApp;
+      const wave = document.getElementById('set-waveform');
+      const redact = document.getElementById('set-redact');
+      const wakeBox = document.getElementById('set-wake');
+      const wakePhrase = document.getElementById('set-wake-phrase');
+      const canvas = document.getElementById('waveform');
+      const out = {};
+
+      out.waveOn = { checked: wave.checked, visible: !canvas.hidden, cfg: a.config?.visual?.showWaveform };
+      wave.checked = false; wave.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 600));
+      out.waveOff = { visible: !canvas.hidden, cfg: a.config?.visual?.showWaveform, engine: a.wave.visible };
+
+      wave.checked = true; wave.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 600));
+      out.waveBack = { visible: !canvas.hidden, cfg: a.config?.visual?.showWaveform };
+
+      out.redactOn = redact.checked;
+      redact.checked = false; redact.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 600));
+      out.redactOff = a.config?.privacy?.redactSecrets;
+      redact.checked = true; redact.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 600));
+      out.redactBack = a.config?.privacy?.redactSecrets;
+
+      // The phrase field only exists while the toggle is on.
+      out.wake = { rowHidden: document.getElementById('set-wake-phrase-field').hidden, phrase: wakePhrase.value };
+      wakeBox.checked = true; wakeBox.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 1800));
+      out.wakeOn = {
+        enabled: a.config?.voice?.wakeWordEnabled,
+        rowHidden: document.getElementById('set-wake-phrase-field').hidden,
+        state: document.getElementById('set-wake-state').textContent
+      };
+
+      wakeBox.checked = false; wakeBox.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 1200));
+      out.wakeOff = {
+        enabled: a.config?.voice?.wakeWordEnabled,
+        rowHidden: document.getElementById('set-wake-phrase-field').hidden
+      };
+      return out;
+    })()`);
+
+    check('showWaveform actually hides the spectrum strip',
+      toggles.waveOn.visible === true && toggles.waveOff.visible === false &&
+      toggles.waveOff.cfg === false && toggles.waveOff.engine === false,
+      `on=${JSON.stringify(toggles.waveOn)} off=${JSON.stringify(toggles.waveOff)}`);
+
+    check('showWaveform restores the strip when switched back on',
+      toggles.waveBack.visible === true && toggles.waveBack.cfg === true,
+      JSON.stringify(toggles.waveBack));
+
+    check('redactSecrets is written to config from the interface',
+      toggles.redactOn === true && toggles.redactOff === false && toggles.redactBack === true,
+      `default=${toggles.redactOn} off=${toggles.redactOff} back=${toggles.redactBack}`);
+
+    check('wake phrase field appears only while the wake word is on',
+      toggles.wake.rowHidden === true && toggles.wakeOn.rowHidden === false && toggles.wakeOff.rowHidden === true,
+      `default=${toggles.wake.rowHidden} on=${toggles.wakeOn.rowHidden} off=${toggles.wakeOff.rowHidden}`);
+
+    // The status line must describe the real listener, not the clicked box.
+    check('wake word reports the recogniser it actually started',
+      toggles.wakeOn.enabled === true && /listening for/i.test(toggles.wakeOn.state || ''),
+      toggles.wakeOn.state || 'no state line');
+
+    check('turning the wake word off stops the listener',
+      toggles.wakeOff.enabled === false, `enabled=${toggles.wakeOff.enabled}`);
+
+    const wakeClean = await cdp.eval(`(async () => {
+      const st = await window.legion.voice.wakeStatus();
+      return { running: st.running, wanted: st.wanted, phrase: st.phrase };
+    })()`);
+    check('no wake recogniser survives being switched off',
+      wakeClean.running === false && wakeClean.wanted === false, JSON.stringify(wakeClean));
+
+    // The removed keys must not linger in a saved profile, or a settings file
+    // would still advertise controls the application does not have.
+    const stale = await cdp.eval(`(() => {
+      const v = window.legionApp.config?.voice || {};
+      const p = window.legionApp.config?.privacy || {};
+      return {
+        voice: ['speakerDeviceId', 'pitch', 'sttEngine', 'whisperModelPath'].filter((k) => k in v),
+        privacy: ['telemetry'].filter((k) => k in p)
+      };
+    })()`);
+    check('unsupported settings are absent from the live config',
+      stale.voice.length === 0 && stale.privacy.length === 0,
+      `voice=[${stale.voice.join(',')}] privacy=[${stale.privacy.join(',')}]`);
+
     await cdp.eval(`window.legionApp.togglePanel(null)`);
     await sleep(700);
 
