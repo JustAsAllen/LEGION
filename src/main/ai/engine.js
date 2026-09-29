@@ -81,7 +81,8 @@ class AIEngine {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         const res = await provider.chat({
           system, messages: wire, tools,
-          temperature: cfg.temperature, maxTokens: cfg.maxTokens, signal
+          temperature: cfg.temperature, maxTokens: cfg.maxTokens, signal,
+          onDelta: (delta) => { if (delta) this.emit('delta', { text: delta }); }
         });
         usage = res.usage; model = res.model;
         if (res.text) finalText = res.text;
