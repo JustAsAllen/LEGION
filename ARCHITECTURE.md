@@ -47,13 +47,17 @@ and registers the 44 IPC handlers. The rest are focused modules it calls into.
 | `voice/tts.js` | the synthesis pipeline, and which tier answered |
 | `voice/voicepack.js` | resolve a phrase to a prerecorded clip |
 | `voice/edge.js` | online neural voices, with availability and last-error state |
-| `voice/piper.js` | optional local neural TTS, probed once and skipped if absent |
+| `voice/piper.js` | local neural TTS, bundled-resource discovery plus configurable fallback |
 | `voice/stt.js` | Windows speech recognition |
 | `voice/wake.js` | continuous listening and the wake word |
 | `tools/registry.js` | the tool table the model is shown |
 | `tools/sandbox.js` | write roots and the command allowlist |
 | `tools/*.js` | 36 tools, grouped by area |
 | `system/metrics.js` | real CPU/memory numbers for the status bar |
+
+### Live AI turn
+
+The renderer submits text through `ai:chat`. The main process owns the provider call and emits provider text deltas over the existing `ai:event` channel; no network client or secret crosses into the renderer. Ollama uses its newline-delimited streaming response when the engine supplies a delta callback. When the turn completes, the renderer sends the final accumulated reply through the existing hybrid TTS pipeline, so the same voice-pack → online neural → Piper → SAPI ordering applies to live AI responses.
 
 ### The state machine
 
@@ -78,8 +82,7 @@ UI can say "this sentence was prerecorded" instead of guessing.
 1. **Static voice pack** — a recorded clip. Instant, offline, and always first.
 2. **Online voice** (`voice/edge.js`) — Microsoft Edge neural voices, when the
    phrase is not recorded and the mode allows the network. Returns MP3.
-3. **Piper** (`voice/piper.js`) — local neural TTS, skipped unless an executable
-   and model are configured. Optional, and never required.
+3. **Piper** (`voice/piper.js`) — local neural TTS. Development builds discover `assets/piper`; packaged builds discover the unpacked `resources/piper` directory. It is used when `piper.exe` and an `.onnx` voice model are present.
 4. **System voice (SAPI)** — the final fallback. Returns WAV.
 
 Two rules make this predictable. A tier that fails returns `null` instead of
