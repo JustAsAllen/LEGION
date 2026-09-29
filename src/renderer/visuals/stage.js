@@ -27,15 +27,20 @@ const PALETTE = {
   amber:   new THREE.Color(1.00, 0.66, 0.20)
 };
 
+/**
+ * `themeAccent: true` marks a state that follows the user's chosen theme colour.
+ * ALERT and ERROR deliberately keep fixed colours: an amber/red warning that
+ * recoloured into a pale blue or mint theme would stop reading as a warning.
+ */
 const STATE_TARGETS = {
-  OFFLINE:    { energy: 0.10, form: 0.00, intensity: 0.10, size: 0.26, scan: 0.00, dissolve: 0.00, accent: PALETTE.base, alertMix: 0 },
-  BOOTING:    { energy: 1.00, form: 0.00, intensity: 0.55, size: 0.34, scan: 0.30, dissolve: 0.10, accent: PALETTE.accent, alertMix: 0 },
-  IDLE:       { energy: 0.30, form: 1.00, intensity: 1.00, size: 0.32, scan: 0.00, dissolve: 0.00, accent: PALETTE.accent, alertMix: 0 },
-  LISTENING:  { energy: 0.60, form: 1.00, intensity: 1.30, size: 0.32, scan: 0.12, dissolve: 0.00, accent: PALETTE.accent, alertMix: 0 },
-  PROCESSING: { energy: 0.95, form: 1.00, intensity: 1.15, size: 0.33, scan: 0.42, dissolve: 0.13, accent: PALETTE.accent, alertMix: 0 },
-  SPEAKING:   { energy: 0.52, form: 1.00, intensity: 1.20, size: 0.32, scan: 0.00, dissolve: 0.00, accent: PALETTE.accent, alertMix: 0 },
-  ALERT:      { energy: 0.72, form: 1.00, intensity: 1.22, size: 0.33, scan: 0.16, dissolve: 0.04, accent: PALETTE.amber, alertMix: 0.55 },
-  ERROR:      { energy: 0.38, form: 0.92, intensity: 0.90, size: 0.33, scan: 0.10, dissolve: 0.28, accent: PALETTE.alert, alertMix: 0.85 }
+  OFFLINE:    { energy: 0.10, form: 0.00, intensity: 0.10, size: 0.26, scan: 0.00, dissolve: 0.00, accent: PALETTE.base, alertMix: 0, themeAccent: true },
+  BOOTING:    { energy: 1.00, form: 0.00, intensity: 0.55, size: 0.34, scan: 0.30, dissolve: 0.10, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
+  IDLE:       { energy: 0.30, form: 1.00, intensity: 1.00, size: 0.32, scan: 0.00, dissolve: 0.00, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
+  LISTENING:  { energy: 0.60, form: 1.00, intensity: 1.30, size: 0.32, scan: 0.12, dissolve: 0.00, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
+  PROCESSING: { energy: 0.95, form: 1.00, intensity: 1.15, size: 0.33, scan: 0.42, dissolve: 0.13, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
+  SPEAKING:   { energy: 0.52, form: 1.00, intensity: 1.20, size: 0.32, scan: 0.00, dissolve: 0.00, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
+  ALERT:      { energy: 0.72, form: 1.00, intensity: 1.22, size: 0.33, scan: 0.16, dissolve: 0.04, accent: PALETTE.amber, alertMix: 0.55, themeAccent: false },
+  ERROR:      { energy: 0.38, form: 0.92, intensity: 0.90, size: 0.33, scan: 0.10, dissolve: 0.28, accent: PALETTE.alert, alertMix: 0.85, themeAccent: false }
 };
 
 function damp(current, target, lambda, dt) {
@@ -86,6 +91,12 @@ export class FaceStage {
     this.target = Object.assign({}, STATE_TARGETS.BOOTING);
     this.accentLive = new THREE.Color().copy(PALETTE.accent);
     this.accentTarget = PALETTE.accent;
+    // The user's chosen theme colour and glow, applied to whichever states
+    // opt in via themeAccent. Kept separate from the live/target pair so a
+    // theme change re-derives the current accent instead of overwriting it.
+    this.themeAccent = PALETTE.accent.clone();
+    this.themeGlow = 1;
+    this.scanlineAlpha = 0.5;
 
     this.audio = { low: 0, mid: 0, high: 0, mouth: 0, energy: 0 };
     this.mouthOpen = 0;
@@ -125,9 +136,6 @@ export class FaceStage {
     this._fpsAccum = 0;
     this._sinceQualityChange = 0;
     this._goodWindows = 0;
-
-    this.onFps = null;
-    this.onReady = null;
 
     this._resize = this._resize.bind(this);
     this._frame = this._frame.bind(this);
@@ -171,8 +179,16 @@ export class FaceStage {
     if (!STATE_TARGETS[next]) return;
     this.state = next;
     this.target = Object.assign({}, STATE_TARGETS[next]);
-    this.accentTarget = this.target.accent;
+    this._retargetAccent();
     if (next === 'BOOTING') this.bootStart = this.elapsed;
+  }
+
+  /**
+   * Recompute the accent the field is easing toward. States flagged
+   * themeAccent follow the user's theme; the rest use their fixed colour.
+   */
+  _retargetAccent() {
+    this.accentTarget = this.target.themeAccent ? this.themeAccent : this.target.accent;
   }
 
   /** Boot: converge the cloud into the face over a few seconds. */
@@ -196,7 +212,6 @@ export class FaceStage {
     this.field.setCloud(data);
     this.cloudCount = this.field.total;
     this._applyQuality();
-    this.onCloud && this.onCloud(this.cloudCount);
     return this.cloudCount;
   }
 
@@ -238,13 +253,29 @@ export class FaceStage {
     document.body.classList.toggle('no-scanlines', !this.scanlines);
   }
 
+  /**
+   * Per-theme scanline strength. The overlay is a CSS layer, so the value is
+   * published as a custom property rather than stored and never read.
+   */
   setScanlineAlpha(v) {
     this.scanlineAlpha = Math.max(0, Math.min(1, Number(v) || 0));
+    document.documentElement.style.setProperty('--scan-alpha', String(this.scanlineAlpha));
   }
 
-  setAccent(hex) {
-    this.accent = new Color(hex || '#28e0c8');
-    if (this.uniforms && this.uniforms.uAccent) this.uniforms.uAccent.value.copy(this.accent);
+  /**
+   * Apply a theme. The uniform is written every frame from `accentLive`, which
+   * eases toward `accentTarget`, so the correct sink is the theme colour plus a
+   * retarget — writing `uColorAccent` directly here would be overwritten on the
+   * next frame and the theme would never stick.
+   *
+   * @param {string} hex  theme accent colour
+   * @param {number} glow per-theme glow multiplier
+   */
+  setAccent(hex, glow) {
+    this.themeAccent.set(hex || '#28e0c8');
+    this.themeGlow = glow === undefined || glow === null ? 1 : Math.max(0.3, Math.min(1.8, Number(glow) || 1));
+    this._retargetAccent();
+    return this.themeAccent;
   }
 
   _applyQuality() {
@@ -322,7 +353,6 @@ export class FaceStage {
       this.fps = this._frames / this._fpsAccum;
       this._frames = 0;
       this._fpsAccum = 0;
-      if (this.onFps) this.onFps(this.fps, this.currentInstances);
       if (this.adaptive && this.field.built && this._sinceQualityChange > 2.5) {
         const idx = TIER_ORDER.indexOf(this.quality);
         // The tier the user picked is the ceiling: adaptive may drop below it
@@ -417,7 +447,7 @@ export class FaceStage {
     u.uBlink.value = this.blink;
     u.uScanStrength.value = this.live.scan;
     u.uScanY.value = ((this.elapsed * 9.0) % 34) - 15;
-    u.uGlow.value = this.opts.bloom ? 1 : 0.35;
+    u.uGlow.value = (this.opts.bloom ? 1 : 0.35) * this.themeGlow;
     u.uAudio.value.set(this.audio.low, this.audio.mid, this.audio.high);
     u.uColorAccent.value.copy(this.accentLive);
     u.uColorBase.value.copy(PALETTE.base).lerp(PALETTE.alert, this.live.alertMix * 0.7);

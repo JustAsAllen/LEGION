@@ -297,6 +297,62 @@ async function main() {
     check('frame rate healthy', after.fps >= 30, `${after.fps} fps`);
     check('fps chip reflects the loop', /fps/.test(after.chip), JSON.stringify(after.chip));
 
+    /* ---- theme -------------------------------------------------- */
+    // applyTheme is the one user path that used to throw. Exercise every theme
+    // and assert the accent actually reached the shader colour, not just that
+    // the call did not throw.
+    const theme = await cdp.eval(`(async () => {
+      const app = window.legionApp, st = app.stage;
+      const wait = (n) => new Promise((r) => { let i = 0; const t = setInterval(() => { if (++i >= n) { clearInterval(t); r(); } }, 60); });
+      const out = [];
+      for (const name of ['ember', 'mint', 'mono', 'abyss', 'legion-dark']) {
+        app.applyTheme(name);
+        await wait(18);
+        const u = st.field.uniforms.uColorAccent.value;
+        out.push({
+          name,
+          css: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
+          shader: [u.r, u.g, u.b].map((v) => Number(v.toFixed(3))),
+          glow: Number(st.themeGlow.toFixed(2)),
+          scan: getComputedStyle(document.documentElement).getPropertyValue('--scan-alpha').trim(),
+          state: st.state,
+          accentTarget: st.accentTarget === st.themeAccent
+        });
+      }
+      return out;
+    })()`);
+    const wantHex = { ember: '#ff7a45', mint: '#3ee2a4', mono: '#c8d2e0', abyss: '#35c8ff', 'legion-dark': '#35c8ff' };
+    const hexToLinear = (hex) => {
+      const n = parseInt(hex.slice(1), 16);
+      const srgb = [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255];
+      return srgb.map((c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)));
+    };
+    for (const t of theme) {
+      const want = hexToLinear(wantHex[t.name]);
+      // The accent eases, so allow a little residual distance from the target.
+      const settled = want.every((c, i) => Math.abs(c - t.shader[i]) < 0.06);
+      check(`theme applies without throwing: ${t.name}`,
+        t.css.toLowerCase() === wantHex[t.name].toLowerCase(),
+        `--accent=${t.css} scan=${t.scan} glow=${t.glow}`);
+      check(`theme reaches the shader: ${t.name}`,
+        settled && t.accentTarget,
+        `shader=[${t.shader}] target=[${want.map((v) => v.toFixed(3))}] live-follows=${t.accentTarget}`);
+    }
+    check('scanline strength is published to CSS', theme.every((t) => t.scan !== ''), `scan=${theme.map((t) => t.scan).join(',')}`);
+    // ALERT and ERROR must keep their own colours, or a warning in a pale
+    // theme would stop reading as a warning.
+    const alertAccent = await cdp.eval(`(async () => {
+      const st = window.legionApp.stage;
+      st.setState('ALERT'); await new Promise((r) => setTimeout(r, 30));
+      const amber = st.accentTarget === st.target.accent;
+      st.setState('ERROR'); await new Promise((r) => setTimeout(r, 30));
+      const red = st.accentTarget === st.target.accent;
+      st.setState('IDLE');
+      return { amber, red };
+    })()`);
+    check('ALERT and ERROR keep fixed warning colours',
+      alertAccent.amber && alertAccent.red, JSON.stringify(alertAccent));
+
     check('status bar has metrics', a.layout.bar && a.layout.bar.vis, JSON.stringify(a.layout));
     check('no page overflow', !a.overflow.x && !a.overflow.y, JSON.stringify(a.overflow));
     check('window has a sane viewport', a.inner.w > 800 && a.inner.h > 600, `${a.inner.w}x${a.inner.h}`);

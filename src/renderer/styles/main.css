@@ -77,18 +77,19 @@ svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width:
   mix-blend-mode: multiply;
 }
 
+/* --scan-alpha is the per-theme scanline strength, set by FaceStage.setScanlineAlpha. */
 .scanlines {
   position: fixed;
   inset: 0;
   z-index: 2;
   pointer-events: none;
-  opacity: .5;
+  opacity: var(--scan-alpha, .5);
   background: repeating-linear-gradient(180deg, rgba(255,255,255,.018) 0 1px, transparent 1px 3px);
   transition: opacity .5s var(--ease);
 }
-body[data-state="ALERT"] .scanlines { opacity: .85;
+body[data-state="ALERT"] .scanlines { opacity: calc(var(--scan-alpha, .5) * 1.7);
   background: repeating-linear-gradient(180deg, rgba(255,95,67,.05) 0 1px, transparent 1px 3px); }
-body.reduced-motion .scanlines { opacity: .18; }
+body.reduced-motion .scanlines { opacity: calc(var(--scan-alpha, .5) * .36); }
 body.no-scanlines .scanlines { opacity: 0; }
 
 /* ── title bar ───────────────────────────────────────────────── */

@@ -125,11 +125,18 @@ class Legion {
       this.log('starting render surface', 'dim');
       this.stage = new FaceStage(document.getElementById('stage'), {
         quality: this.config.visual?.quality || 'high',
+        particleScale: this.config.visual?.particleScale ?? 1,
+        themeIntensity: this.config.visual?.themeIntensity ?? 1,
         reducedMotion: !!this.config.visual?.reducedMotion,
-        theme: this.theme,
+        bloom: this.config.visual?.bloom !== false,
         adaptive: this.config.visual?.adaptiveQuality !== false,
         scanlines: this.config.visual?.showScanlines !== false
       });
+      // The theme was applied above while this.stage was still undefined, so
+      // the face needs the accent, glow and scanline strength handed to it
+      // again now that it exists. Without this the saved theme only took effect
+      // after the user changed it in Settings.
+      this.applyTheme(this.theme, true);
       this.bootProgress(0.24);
 
       this.log('reading audio devices', 'dim');

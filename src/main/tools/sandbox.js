@@ -15,8 +15,6 @@ const os = require('os');
 
 const HOME = os.homedir();
 
-const FORBIDDEN_SEGMENTS = new Set(['..']);
-
 class SandboxError extends Error {
   constructor(message, code) {
     super(message);
@@ -107,7 +105,7 @@ class PathSandbox {
     }
     if (/%USERPROFILE%/i.test(out)) out = out.replace(/%USERPROFILE%/gi, HOME);
     if (/%APPDATA%/i.test(out)) out = out.replace(/%APPDATA%/gi, process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming'));
-    if (/%TEMP%|\.TMP$/i.test(out) === false && /%TEMP%/i.test(out)) out = out.replace(/%TEMP%/gi, os.tmpdir());
+    if (/%TEMP%/i.test(out)) out = out.replace(/%TEMP%/gi, os.tmpdir());
     return out;
   }
 }

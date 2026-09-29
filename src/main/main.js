@@ -383,7 +383,8 @@ function registerIpc() {
   handle('ai:chat', async (text) => {
     const input = String(text || '').trim();
     if (!input) throw new Error('Nothing to send.');
-    if (!memory.config.enabled && false) { /* memory setting only affects storage, not inference */ }
+    // memory.config.enabled gates what is *stored*; it deliberately does not
+    // gate inference, so a request is still answered with memory switched off.
     setState('PROCESSING');
     try {
       const res = await ai.respond(input);
@@ -527,14 +528,23 @@ function applyStartupSetting() {
   } catch (err) { console.error('[startup] could not update autostart:', err.message); }
 }
 
+let shortcutReport = { failed: [], active: [] };
+
 function registerGlobalShortcuts() {
   const ok = [];
+  const failed = [];
   const tryReg = (accel, fn) => {
-    try { if (globalShortcut.register(accel, fn)) ok.push(accel); } catch (_) { /* taken */ }
+    try {
+      if (globalShortcut.register(accel, fn)) ok.push(accel);
+      else failed.push(accel);
+    } catch (_) { failed.push(accel); }
   };
   tryReg('CommandOrControl+L', () => showWindow());
   tryReg('CommandOrControl+Shift+L', () => { showWindow(); send('shortcut:activate', {}); });
-  ok.forEach(() => {});
+  // A silent registration failure leaves the user with a dead shortcut and no
+  // explanation. The renderer may not have finished loading yet, so this rides
+  // along on the app:ready payload instead of being pushed as a bare event.
+  shortcutReport = { failed, active: ok };
 }
 
 /* ------------------------------------------------------------------ */
@@ -562,7 +572,13 @@ if (!app.requestSingleInstanceLock() && !isDev) {
     else setState('IDLE');
 
     win.webContents.once('did-finish-load', () => {
-      send('app:ready', { onboarded, playBoot, state: currentState, startMinimized: config.get().app.startMinimized });
+      send('app:ready', {
+        onboarded,
+        playBoot,
+        state: currentState,
+        startMinimized: config.get().app.startMinimized,
+        shortcuts: shortcutReport
+      });
     });
   });
 

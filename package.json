@@ -15,12 +15,12 @@
     "pack": "electron-builder --dir"
   },
   "dependencies": {
-    "systeminformation": "^5.23.5",
-    "three": "^0.170.0"
+    "systeminformation": "^5.23.5"
   },
   "devDependencies": {
     "electron": "^33.2.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "three": "^0.170.0"
   },
   "build": {
     "appId": "ai.legion.desktop",

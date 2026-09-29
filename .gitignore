@@ -4,6 +4,7 @@ node_modules/
 # build output and test captures
 dist/
 out/
+release/
 artifacts/
 *.log
 
