@@ -25,5 +25,9 @@ if not exist "%ELECTRON%" (
   exit /b 1
 )
 
-start "" "%ELECTRON%" "%~dp0"
+REM package.json names the real entry point (src/main/main.js), so hand Electron
+REM the app directory as "." with the working directory set to it. Passing the
+REM directory path itself makes Electron treat it as a module to resolve,
+REM which fails with "Cannot find module" on a path containing spaces.
+start "" "%ELECTRON%" .
 endlocal

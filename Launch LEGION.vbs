@@ -6,18 +6,18 @@ Option Explicit
 '  For a console + any error output, use "Launch LEGION.bat" instead.
 ' ======================================================================
 
-Dim shell, fso, here, electron, cmd
+Dim shell, fso, here, electron, q, cmd
+
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
 here = fso.GetParentFolderName(WScript.ScriptFullName)
-Set current = fso.GetCurrentFolder
-If Len(current) = 0 Then Set current = shell.ExpandEnvironmentStrings("%USERPROFILE%")
-fso.CurrentFolder = here
 
-' Electron is a dev dependency; use its local binary so nothing global is required.
+' package.json names the real entry point (src/main/main.js), so hand Electron
+' the app directory as "." with the working directory set to it. Passing the
+' directory path itself makes Electron treat it as a module to resolve, which
+' fails with "Cannot find module" on a path containing spaces.
 electron = here & "\node_modules\electron\dist\electron.exe"
-
 If Not fso.FileExists(electron) Then
   MsgBox "LEGION could not start." & vbCrLf & vbCrLf & _
          "Electron was not found at:" & vbCrLf & electron & vbCrLf & vbCrLf & _
@@ -27,6 +27,16 @@ If Not fso.FileExists(electron) Then
   WScript.Quit 1
 End If
 
-cmd = """" & electron & """ "" & here
-' Launch hidden: 0 = normal, 1 = hidden
+If Not fso.FileExists(here & "\package.json") Then
+  MsgBox "LEGION could not start." & vbCrLf & vbCrLf & _
+         "No package.json in:" & vbCrLf & here & vbCrLf & vbCrLf & _
+         "Keep this launcher in the project root.", vbCritical, "LEGION"
+  WScript.Quit 1
+End If
+
+q = Chr(34)
+' Run hidden (window style 1). The working directory has to change too, because
+' Electron resolves "." relative to it.
+shell.CurrentDirectory = here
+cmd = q & electron & q & " ."
 shell.Run cmd, 1, False

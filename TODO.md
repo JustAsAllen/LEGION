@@ -39,7 +39,8 @@ First run only: `npm install`.
 ## Next
 
 ### 1. Documentation (from the build prompt, §43)
-- [ ] `README.md` — what it is, features, requirements, install, setup, AI/voice config, running, building, troubleshooting, security
+- [x] `README.md` — what it is, features, requirements, install, running, building, the check suite, themes
+- [x] `assets/logo.svg` — segmented-ring mark, geometry matching `logo-model.js`
 - [ ] `ARCHITECTURE.md` — components, data flow, AI/voice/visual pipelines, state machine, tool system, memory
 - [ ] `.env.example` — every supported env var, no real values
 - [ ] `CONTRIBUTING.md` — the check suite, conventions, how to add a tool / provider / state
@@ -77,7 +78,15 @@ First run only: `npm install`.
 
 ## Known issues
 
-- none open
+- The launchers pass `.` to Electron with the working directory set to the
+  project root, because passing the directory path itself made Electron treat
+  it as a module to resolve and fail with "Cannot find module" on a path
+  containing spaces.
+- The `4` o'clock arc holds ~2000 more samples than the other two at the full
+  16000-sample capacity (sampler overflow). The gaps are still empty, so it is
+  a density imbalance, not a placement error. Low priority.
+- The README screenshot (`assets/screenshot-idle.png`) is a capture, not a
+  re-render, and has not been re-checked against the final ring.
 
 ---
 
