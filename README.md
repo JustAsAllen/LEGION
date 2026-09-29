@@ -1,215 +1,196 @@
-<div align="center">
-  <img src="assets/logo.svg" width="180" alt="LEGION logo" />
+# LEGION
 
-  <h1>LEGION</h1>
-  <p><strong>A personal AI intelligence living inside your computer.</strong></p>
-</div>
+> **A personal AI intelligence living inside your computer.**
 
----
+LEGION is a Windows-first Electron desktop assistant with a strict main/renderer security boundary, real-time WebGL visuals, voice input/output, provider-independent AI, local Ollama streaming, four-tier TTS, tool execution with confirmation, and production packaging through electron-builder.
 
-LEGION is a desktop assistant built on Electron. It listens, speaks, watches its
-own resource usage, and shows you what it is doing through a GPU-rendered
-particle mark — three arc segments of a ring with gaps at 2, 6 and 10 o'clock.
+## Executive summary
 
-The mark is not an image. Every point is sampled against an analytic ring
-definition in a Web Worker and shaded in a fragment shader, so it reacts to
-state (idle, listening, thinking, speaking), theme and system load in real time.
+LEGION is built as a self-contained desktop runtime rather than a web wrapper. The renderer owns presentation and interaction. The main process owns privileged work, AI providers, filesystem/network access, memory, tools, and voice orchestration. Preload exposes only an explicit IPC surface.
 
-## Screens
+The production path is:
 
-![LEGION idle](assets/screenshot-idle.png)
+    user input → renderer → preload → main/AI
+               → streamed ai:event deltas
+               → final reply → four-tier TTS → renderer audio
 
-## What it does
+The visual path is equally deliberate: a procedurally generated three-segment ring is sampled in a Web Worker and rendered through WebGL with a square camera projection, so the mark stays circular on 16:9 displays.
 
-- **Voice** — push-to-talk, continuous listening and a configurable wake word, with
-  end-of-turn and silence handling.
-- **Visual mark** — a live segmented ring that reflects app state and system load.
-- **Settings** — waveform, redaction, wake phrase, theme, and audio device controls
-  that are actually wired to real state.
-- **Confirmations** — a confirmation gate for anything with impact, so a tool call
-  never happens silently.
-- **First run** — a guided setup that can be dismissed and is safe to re-enter.
+## Tech stack
 
-## Requirements
-
-- Windows (the launchers are `.bat` and `.vbs`)
-- Node.js 18 or newer
-- A microphone, if you want to use the voice features
-
-## Install
-
-```bash
-npm install
-```
-
-## Run
-
-Double-click one of the launchers in the project root:
-
-- **`Launch LEGION.vbs`** — silent, no console window. This is the recommended one.
-- **`Launch LEGION.bat`** — keeps a console window, useful if you want to see
-  startup errors.
-
-Or from a terminal:
-
-```bash
-npm start        # normal
-npm run dev      # with devtools
-```
-
-To verify a launcher end to end — that a titled window appears and the render
-loop is alive rather than frozen or spinning:
-
-```bash
-npm run check:launch
-```
-
-## Checks
-
-LEGION ships with a check suite. Each one is a real test against a live app or a
-live static analysis, not a unit test with mocks.
-
-```bash
-npm run check       # everything
-npm run check:fast  # static + scope self-test + IPC
-```
-
-| Script | What it covers |
+| Layer | Technology |
 |---|---|
-| `npm run selftest` | The static-check scope analyzer's own test cases |
-| `npm run check:static` | Syntax, missing handlers, DOM ids, and undeclared reads (acorn AST walk) |
-| `npm run check:ipc` | Every `ipcMain` handler is registered and reachable |
-| `npm run check:data` | The data layer: config, storage, round trips |
-| `npm run check:voice` | STT/TTS routing, error paths, provider fallback |
-| `npm run check:voicepack` | Voice pack: a listed phrase plays its clip, a miss falls through to SAPI, and a manifest cannot read outside its folder |
-| `npm run check:firstrun` | First-run flow and dismiss handling |
-| `npm run check:shell` | Live UI: geometry, panel behaviour, modals, settings round trips |
-| `npm run check:render` | The live renderer: frame rate, element counts, WebGL errors |
-| `npm run check:launch` | Double-clicks the real launcher: time to a titled window, and CPU delta to prove the render loop is alive and not spinning |
+| Desktop runtime | Electron 33 |
+| Main process | Node.js / CommonJS |
+| Renderer | Vanilla ES modules, DOM, WebGL2, Web Audio |
+| 3D/rendering | Three.js, vendored for the renderer |
+| AI | Provider-independent engine + OpenAI/Anthropic/Ollama adapters |
+| Local AI | Ollama NDJSON streaming + automatic local detection |
+| Voice | Voice pack → Edge neural → Piper → Windows SAPI |
+| IPC | Electron contextBridge + explicit channel allowlist |
+| Packaging | electron-builder, NSIS + portable Windows targets |
+| Verification | Acorn static checks + live Electron/shell/render/package checks |
 
-`check:static` parses every project file with acorn and reports undeclared reads
-instead of trusting a hand-maintained list of globals. Vendored three.js is
-skipped.
+## Architecture
+
+    ┌──────────────── RENDERER ────────────────┐
+    │ UI · WebGL · Web Audio · state           │
+    │ live AI text + panels + visual stages    │
+    └──────────────────┬───────────────────────┘
+                       │ explicit IPC
+                ┌──────▼──────┐
+                │   PRELOAD   │
+                │ allowlisted │
+                └──────┬──────┘
+                       │
+    ┌──────────────────▼───────────────────────┐
+    │                  MAIN                    │
+    │ state · AI · tools · voice · memory     │
+    │ filesystem · network · OS integration   │
+    └──────────────┬────────────────┬──────────┘
+                   │                │
+              AI providers       TTS engine
+                   │                │
+          Ollama/OpenAI/       1. Voice pack
+          Anthropic            2. Edge neural
+                               3. Piper local
+                               4. Windows SAPI
+
+### Streaming AI
+
+The renderer submits turns through the ai:chat channel. Main owns the provider connection and emits provider text deltas through the existing ai:event channel. The renderer accumulates and displays those deltas live.
+
+Ollama uses its newline-delimited streaming response when the engine supplies a delta callback. If no provider is configured, LEGION probes local Ollama and can automatically use it when a reachable model is available. No API key is required for that local path.
+
+When the turn completes, the final accumulated reply enters the normal TTS pipeline. Streaming changes the response presentation, not the voice/security architecture.
+
+### Four-tier voice engine
+
+1. **Voice pack** — exact prerecorded phrases, instant and offline.
+2. **Edge neural** — online neural synthesis when the selected mode permits network use.
+3. **Piper** — local neural TTS when a compatible runtime/model is present.
+4. **Windows SAPI** — final system fallback.
+
+Every failed tier returns null and allows the next tier to answer. The selected tier, source, and format are preserved as provenance.
+
+## Repository layout
+
+    LEGION/
+    ├─ assets/
+    │  ├─ logo.svg
+    │  ├─ screenshot-idle.png
+    │  └─ piper/                  optional local Piper runtime/model
+    ├─ src/
+    │  ├─ main/
+    │  │  ├─ ai/                  engine, providers, personality
+    │  │  ├─ system/              host metrics
+    │  │  ├─ tools/               registry, sandbox, tool groups
+    │  │  └─ voice/               TTS, STT, wake, Edge, Piper, packs
+    │  ├─ preload/                 sole renderer/main bridge
+    │  └─ renderer/
+    │     ├─ js/                   app, state, panels, audio
+    │     ├─ styles/               renderer CSS
+    │     ├─ visuals/              WebGL stage, ring, particles, worker
+    │     └─ vendor/               vendored Three.js
+    ├─ scripts/                    checks and benchmark tooling
+    ├─ voicepack/                  shipped prerecorded clips + manifest
+    ├─ ARCHITECTURE.md
+    ├─ CONTRIBUTING.md
+    ├─ TODO.md
+    └─ package.json
+
+Build products never belong in source control: release/, dist/, win-unpacked/, logs, coverage, and local secrets are ignored.
+
+## Quickstart
+
+### Requirements
+
+- Windows 10/11
+- Node.js 18+
+- npm
+- A microphone for STT/voice features
+
+### Install
+
+    git clone https://github.com/JustAsAllen/LEGION.git
+    cd LEGION
+    npm install
+
+### Run
+
+    npm start
+
+Development with DevTools:
+
+    npm run dev
+
+You can also double-click Launch LEGION.vbs for a silent launch or Launch LEGION.bat for a visible console.
+
+### Verify
+
+Normal hermetic verification:
+
+    npm run check
+
+Fast static/security gate:
+
+    npm run check:fast
+
+Optional live Ollama verification:
+
+    LEGION_LIVE_AI=1
+    LEGION_OLLAMA_MODEL=<installed-model>
+    npm run check:ai
+
+The live AI check is skipped unless explicitly enabled.
+
+### Build
+
+Unpacked production build:
+
+    npm run build
+
+Full Windows distributables:
+
+    npm run dist
+
+Outputs go to release/. electron-builder targets both NSIS and portable Windows packages. The packaged application includes src/, assets/, voicepack/, and the optional assets/piper/ runtime under resources/piper/.
+
+For Piper, supply a compatible piper.exe, ONNX voice model, and its sidecar metadata in assets/piper/. Runtime binaries/models are intentionally not fabricated or committed without compatible redistribution rights.
+
+## Verification commands
+
+| Command | Purpose |
+|---|---|
+| npm run check | Full source, IPC, security, data, voice, UI, render and AI-check suite |
+| npm run check:fast | Quick static/scope/IPC/security gate |
+| npm run check:render | Live WebGL checks including square projection |
+| npm run check:package | Checks the real release/win-unpacked package |
+| npm run check:launch | Verifies the real launcher and live render loop |
+| npm run bench | Performance, heap and frame benchmark |
+| npm run dist | NSIS + portable distributables |
+
+check:package is host-policy aware. If Windows blocks an unsigned test executable, LEGION_ALLOW_UNSIGNED_PACKAGE_CHECK=1 permits static package validation while still reporting that runtime launch was not verified.
 
 ## Voice packs
 
-Drop a `.wav` or `.mp3` in `voicepack/`, named after the phrase, and LEGION plays
-that recording instead of synthesising those exact words:
+voicepack/manifest.json maps exact phrases to .wav or .mp3 clips. A pack hit always wins before synthesis. See voicepack/README.md for the format.
 
-```json
-// voicepack/manifest.json
-{ "phrase": "On it.", "file": "on-it.mp3" }
-```
+## Security model
 
-Matching is exact once case and punctuation are folded, so `"On it."`, `"on it"`
-and `"  ON IT! "` all hit the same clip. Anything with no clip moves down to the
-next voice source — there is no wildcard, because a catch-all would play one
-clip for text it does not match, and the mark would appear to say something the
-app never said.
+- Renderer has no direct Node.js filesystem, process, or network access.
+- Secrets stay in main and never cross IPC as values.
+- Preload exposes explicit allowlisted operations only.
+- Tool execution uses sandbox roots and command allowlists.
+- Shell path operations re-check traversal and symlinks.
+- AI provider connections remain in main.
+- High-impact tools pass through confirmation.
 
-A working example pack ships with six real clips. `voicepack/README.md` has the
-format; `npm run voicepack:sample` regenerates them. An installed build also
-reads `resources/voicepack` beside the exe, so you can edit clips without
-repacking.
+## Documentation
 
-## Voice sources
-
-LEGION speaks through the first source that can answer:
-
-| # | Source | Notes |
-|---|--------|-------|
-| 1 | **Voice pack** | Your own recording. Instant and always offline. |
-| 2 | **Online voice** | Microsoft Edge neural voices. Sends the text to that service, so it needs a network. |
-| 3 | **Piper** | Local neural TTS. Optional; used only if you install it. |
-| 4 | **System voice** | Windows SAPI. Always available, so speech never fails outright. |
-
-If a source is missing, offline, or errors, LEGION quietly drops to the next one.
-
-Settings → Voice → **Voice source** picks how far down that list it may go:
-
-- **Voice pack, then online voice, then local fallback** — the default
-- **Voice pack, then local fallback (never online)** — nothing leaves the machine
-- **Voice pack only (silence if not recorded)** — prerecorded phrases only
-
-The panel also reads out which sources are actually usable right now, rather
-than listing options that would not work.
-
-## Performance
-
-`npm run bench` boots the real window and measures it — frame-time percentiles,
-JS heap trend, DOM size and the adaptive quality tier:
-
-```bash
-npm run bench          # 30 s soak
-npm run bench 600      # 10 minutes, for a leak claim
-```
-
-Measured over a 10-minute soak on the development machine:
-
-| Metric | Result |
-|---|---|
-| Boot to first frame | 864 ms |
-| Frame time | p50 12.1 ms, p95 24.2 ms, p99 30.3 ms |
-| Frame rate | 81.7 fps mean, 76.8 fps at p5 |
-| JS heap | 8.2 MB → 12.2 MB, peak envelope +0.42 MB over 600 s |
-| DOM nodes | 270, flat for the whole session |
-| Page exceptions | 0 |
-
-The heap is the meaningful leak signal: the collector sawtooths between about
-8 MB and 17 MB and the *peak envelope* — the ceiling, not the last sample —
-stayed flat across ten minutes. Summing RSS across the Electron processes
-instead reports ~820 MB, but that double-counts the large pages those processes
-share, so it overstates real usage.
-
-The sampler reads its own `requestAnimationFrame` timestamps rather than the
-app's fps counter, so a misreported frame rate would still show up.
-
-`bench` refuses to run while a LEGION instance is already alive, since a stray
-process makes every number wrong. It also disables Chromium's occlusion
-throttling for the run: a window sitting behind another window otherwise gets
-rAF at about 1 Hz, which reads as a 20 fps app and makes adaptive quality drop to
-the lowest tier for no reason of its own. That behaviour is the tier policy
-working, not a fault — but it must not contaminate a measurement.
-
-Adaptive quality, observed under that load: `ultra → high → medium → low`, and
-back to `ultra` once frames recovered. The tier you pick is a ceiling, so adaptive
-mode may drop below it under load but never climbs past it.
-
-## Build a distributable
-
-```bash
-npm run dist
-```
-
-Outputs land in `release/`. Windows targets are an NSIS installer and a portable
-executable.
-
-## Project layout
-
-```
-src/
-  main/        main process, window, IPC handlers
-    ai/        provider-independent engine, provider adapters, personality
-    voice/     SAPI TTS, voice packs, Windows STT, wake word
-    tools/     36 tools, registry, sandbox
-    system/    metrics
-  renderer/    the UI, the mark, and the Web Worker that samples it
-    visuals/   ring geometry, particle field, glyph atlas, stage
-    js/        app shell, panels, audio
-  preload/     the only renderer/main bridge
-voicepack/     prerecorded clips, manifest.json
-scripts/       the check suite and the benchmark
-assets/        logo
-```
-
-`ARCHITECTURE.md` covers the process split, the state machine and the data flow.
-`CONTRIBUTING.md` covers conventions, and how to add a channel, a tool or a state.
-
-## Themes
-
-`legion-dark`, `abyss`, `ember`, `mint` and `mono`. The accent propagates to the
-CSS, the waveform and the ring shader together, so a theme change is consistent
-across the whole app.
+- **ARCHITECTURE.md** — process boundaries, IPC, AI streaming, voice tiers, renderer pipeline and packaging.
+- **CONTRIBUTING.md** — development conventions and verification workflow.
+- **TODO.md** — implementation status and remaining release/accessibility work.
 
 ## License
 

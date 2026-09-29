@@ -56,6 +56,7 @@ class Legion {
     this.panelApi = null;
     this.theme = 'legion-dark';
     this.busy = false;
+    this._runtimeProvider = null;
     this._last = performance.now();
     this._events = new Map();
     this._confirmResolve = null;
@@ -479,6 +480,11 @@ class Legion {
   #onAiEvent(ev) {
     if (!ev || !ev.type) return;
     const p = ev.payload || {};
+    if (ev.type === 'provider') {
+      this._runtimeProvider = p.provider || null;
+      this.#paintStatus();
+      return;
+    }
     if (ev.type === 'delta' || ev.type === 'text-delta' || ev.type === 'text') {
       this.store.setStreaming(this.store.streaming + (p.text || p.delta || ''));
       this.#paintCaption();
@@ -556,8 +562,9 @@ class Legion {
     const ai = document.getElementById('m-ai');
     if (ai) {
       const p = this.config?.ai?.provider || 'none';
-      ai.textContent = p === 'none' ? 'NONE' : p.toUpperCase();
-      ai.className = p === 'none' ? 'v off' : 'v on';
+      const runtime = this._runtimeProvider || p;
+      ai.textContent = runtime === 'none' ? 'NONE' : runtime.toUpperCase();
+      ai.className = runtime === 'none' ? 'v off' : 'v on';
     }
   }
 

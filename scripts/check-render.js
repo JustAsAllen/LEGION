@@ -210,6 +210,7 @@ const SNAPSHOT = `(() => {
     cloudCount: st ? st.cloudCount : null,
     quality: st ? st.quality : null,
     userQuality: st ? st.userQuality : null,
+    cameraAspect: st && st.camera ? st.camera.aspect : null,
     hasCanvas: !!cv,
     canvasCss: cv ? { w: cv.clientWidth, h: cv.clientHeight } : null,
     drawBuffer: cv ? { w: cv.width, h: cv.height } : null,
@@ -280,6 +281,7 @@ async function main() {
     check('WebGL canvas present', a.hasCanvas, a.canvasCss ? `css ${a.canvasCss.w}x${a.canvasCss.h} dpr=${a.dpr}` : 'missing');
     check('drawing buffer allocated', a.drawBuffer && a.drawBuffer.w > 0, a.drawBuffer ? `${a.drawBuffer.w}x${a.drawBuffer.h}` : 'none');
     check('WebGL context live', a.hasGl && a.glLost === false, `lost=${a.glLost}`);
+    check('mark projection stays square on widescreen', a.cameraAspect === 1, `camera.aspect=${a.cameraAspect}`);
     check('no pending GL error', a.glError === 0, `glGetError=${a.glError}`);
 
     check('particle cloud uploaded', a.cloudCount > 0, `${a.cloudCount?.toLocaleString()} elements`);

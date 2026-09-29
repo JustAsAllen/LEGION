@@ -137,10 +137,18 @@ const launched = await new Promise((resolve) => {
 });
 
 if (!launched.ok) {
+  const hostBlocked = /Application Control|Smart App Control|blocked|not permitted|access is denied/i.test(launched.error || '');
+  if (hostBlocked && process.env.LEGION_ALLOW_UNSIGNED_PACKAGE_CHECK === '1') {
+    console.log('\\nSKIP  executable launch: Windows policy blocked the unsigned test binary; static package checks passed.');
+    console.log('      This flag does not disable Windows security; it only makes static validation non-failing.');
+    kill('LEGION.exe');
+    await sleep(600);
+    process.exit(failed ? 1 : 0);
+  }
   check('the built exe can be launched on this machine', false,
     `Windows refused to start it: ${launched.error}. ` +
-    'An unsigned self-built exe is commonly blocked by Application Control or Smart App Control; ' +
-    'sign the binary or allow the folder, then re-run.');
+    'An unsigned self-built exe may be blocked by Application Control or Smart App Control; ' +
+    'sign the binary or use LEGION_ALLOW_UNSIGNED_PACKAGE_CHECK=1 for static package validation.');
   console.log('\nthe static parts of the build were checked, but this host refused to run it');
   kill('LEGION.exe');
   await sleep(600);

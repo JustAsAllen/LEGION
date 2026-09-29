@@ -51,15 +51,34 @@ class AIEngine {
   async respond(userText) {
     const cfg = this.config;
     const st = this.status();
-    if (!st.ready) {
-      throw new ToolError(st.reason || 'AI connection unavailable.', st.provider === 'none' ? 'E_NO_PROVIDER' : 'E_NO_KEY');
+    if (!st.ready && st.provider !== 'none') {
+      throw new ToolError(st.reason || 'AI connection unavailable.', 'E_NO_KEY');
     }
 
     this.deps.memory.appendMessage('user', userText);
     this.abort = new AbortController();
     const signal = this.abort.signal;
 
-    const provider = this.provider();
+    let provider;
+    if (st.provider === 'none') {
+      // Zero-config local mode: if Ollama is already running, LEGION can use it
+      // without forcing the user to change settings first. Secrets never enter
+      // this path and the renderer still sees the same provider-independent API.
+      const autoCfg = Object.assign({}, cfg, {
+        provider: 'ollama',
+        baseUrl: cfg.baseUrl || 'http://127.0.0.1:11434',
+        model: cfg.model || 'llama3.1'
+      });
+      const local = createProvider('ollama', autoCfg, null);
+      const detected = await local.available();
+      if (!detected.online) {
+        throw new ToolError('No AI provider is configured, and local Ollama is not running.', 'E_NO_PROVIDER');
+      }
+      provider = local;
+      this.emit('provider', { provider: 'ollama', automatic: true, models: detected.models || [] });
+    } else {
+      provider = this.provider();
+    }
     const tools = this.deps.toolManager.catalogue();
     const system = buildSystemPrompt(this.profileId, cfg, {
       longTermEnabled: this.deps.memory.config.longTermEnabled,
@@ -81,7 +100,8 @@ class AIEngine {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         const res = await provider.chat({
           system, messages: wire, tools,
-          temperature: cfg.temperature, maxTokens: cfg.maxTokens, signal
+          temperature: cfg.temperature, maxTokens: cfg.maxTokens, signal,
+          onDelta: (delta) => { if (delta) this.emit('delta', { text: delta }); }
         });
         usage = res.usage; model = res.model;
         if (res.text) finalText = res.text;
