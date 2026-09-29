@@ -140,7 +140,7 @@ class OllamaProvider extends Provider {
     } catch (_) { return { online: false, models: [] }; }
   }
 
-  async chat({ system, messages, tools, temperature, maxTokens, signal }) {
+  async chat({ system, messages, tools, temperature, maxTokens, signal, onDelta }) {
     const model = this.cfg.model || this.defaultModel;
     const wire = [{ role: 'system', content: system }].concat(
       messages.map((m) => ({ role: m.role, content: m.content }))
@@ -193,7 +193,7 @@ class OllamaProvider extends Provider {
       const part = await reader.read();
       if (part.done) break;
       buffer += decoder.decode(part.value, { stream: true });
-      const lines = buffer.split('\\n');
+      const lines = buffer.split('\n');
       buffer = lines.pop() || '';
       for (const line of lines) {
         const trimmed = line.trim();
