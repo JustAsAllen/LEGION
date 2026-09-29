@@ -89,7 +89,7 @@ class OpenAIProvider extends Provider {
   get defaultModel() { return 'gpt-4o-mini'; }
   get base() { return (this.cfg.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, ''); }
 
-  async chat({ system, messages, tools, temperature, maxTokens, signal }) {
+  async chat({ system, messages, tools, temperature, maxTokens, signal, onDelta }) {
     const model = this.cfg.model || this.defaultModel;
     const wire = [{ role: 'system', content: system }].concat(
       messages.map((m) => ({ role: m.role, content: m.content }))
@@ -148,7 +148,7 @@ class OllamaProvider extends Provider {
     const body = {
       model,
       messages: wire,
-      stream: false,
+      stream: !!onDelta,
       options: { temperature: temperature === undefined ? 0.3 : temperature, num_predict: maxTokens || 900 }
     };
     if (tools && tools.length) {
@@ -159,14 +159,50 @@ class OllamaProvider extends Provider {
       method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
     });
     if (!res.ok) throw await asHttpError(res, 'Ollama');
-    const data = await res.json();
-    const msg = data.message || {};
-    const toolCalls = (msg.tool_calls || []).map((tc, i) => ({
-      id: tc.id || `call_${i}`,
-      name: tc.function && tc.function.name,
-      arguments: tc.function && (tc.function.arguments || {})
-    }));
-    return { text: (msg.content || '').trim(), toolCalls, usage: { evalCount: data.eval_count }, model };
+    if (!onDelta) {
+      const data = await res.json();
+      const msg = data.message || {};
+      const toolCalls = (msg.tool_calls || []).map((tc, i) => ({
+        id: tc.id || `call_${i}`,
+        name: tc.function && tc.function.name,
+        arguments: tc.function && (tc.function.arguments || {})
+      }));
+      return { text: (msg.content || '').trim(), toolCalls, usage: { evalCount: data.eval_count }, model };
+    }
+
+    const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+    if (!reader) throw new ToolError('Ollama returned no streaming body.', 'E_AI_STREAM');
+    const decoder = new TextDecoder();
+    let buffer = '', text = '', usage = null;
+    const calls = [];
+    const consume = (data) => {
+      const msg = data && data.message ? data.message : {};
+      if (msg.content) { text += msg.content; onDelta(msg.content); }
+      if (Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          const fn = tc.function || {};
+          const index = tc.index === undefined ? calls.length : tc.index;
+          calls[index] = calls[index] || { id: tc.id || `call_${index}`, name: fn.name || '', arguments: {} };
+          if (fn.name) calls[index].name = fn.name;
+          if (fn.arguments && typeof fn.arguments === 'object') Object.assign(calls[index].arguments, fn.arguments);
+        }
+      }
+      if (data.done) usage = { evalCount: data.eval_count, promptEvalCount: data.prompt_eval_count };
+    };
+    while (true) {
+      const part = await reader.read();
+      if (part.done) break;
+      buffer += decoder.decode(part.value, { stream: true });
+      const lines = buffer.split('\\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try { consume(JSON.parse(trimmed)); } catch (_) { /* incomplete line */ }
+      }
+    }
+    if (buffer.trim()) { try { consume(JSON.parse(buffer)); } catch (_) {} }
+    return { text: text.trim(), toolCalls: calls.filter(Boolean), usage, model };
   }
 }
 
