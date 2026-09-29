@@ -19,9 +19,11 @@
     "check:ipc": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-ipc.js .",
     "check:firstrun": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-firstrun.js .",
     "check:voice": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-voice.js .",
+    "check:voicepack": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-voicepack.js",
+    "voicepack:sample": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/make-voicepack-sample.js",
     "check:shell": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-shell.js .",
     "check:render": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-render.js .",
-    "check": "npm run selftest && npm run check:static && npm run check:ipc && npm run check:data && npm run check:voice && npm run check:firstrun && npm run check:shell && npm run check:render",
+    "check": "npm run selftest && npm run check:static && npm run check:ipc && npm run check:data && npm run check:voice && npm run check:voicepack && npm run check:firstrun && npm run check:shell && npm run check:render",
     "check:fast": "npm run selftest && npm run check:static && npm run check:ipc",
     "check:launch": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-launch.js",
     "launch": "electron ."

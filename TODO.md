@@ -15,6 +15,9 @@ Launch LEGION.bat        double-click, with a console
 npm start                from a terminal
 npm run check            full check suite (~3 min)
 npm run check:fast       selftest + static + ipc (~5 s)
+npm run check:launch     launcher boots a window and stays alive
+npm run bench            performance benchmark (~1 min)
+npm run voicepack:sample regenerate the example voice pack clips
 ```
 
 First run only: `npm install`.
@@ -76,20 +79,23 @@ First run only: `npm install`.
 - [ ] launch-at-startup toggle
 - [ ] never open the mic without explicit opt-in
 
-### 8. Custom voice packs (not started — no prior work exists)
-- [ ] decide a pack format (SAPI voice, .wav, both?)
-- [ ] import/install flow and a place on disk
-- [ ] a check that the active pack is the one that was selected
-- [ ] decide whether packs are per-user or shipped with the app
+### 8. Custom voice packs
+- [x] pack format chosen: `.wav`/`.mp3` clips + a `manifest.json` mapping phrase to file
+- [x] `src/main/voice/voicepack.js` — resolve a phrase to a clip, with normalisation and traversal guard
+- [x] consulted before SAPI in `tts.synthesize()`; a pack hit works on any platform, not just Windows
+- [x] `voicepack/` with a working example pack (6 real SAPI clips) and `npm run voicepack:sample` to regenerate
+- [x] reloads on manifest change, no restart; `voice:pack` IPC for the settings view
+- [x] `check:voicepack` — 11 checks: hit, miss, fall-through, disabled, traversal, audio sniffing
+- [ ] pick a UI surface: choose a pack, toggle packs, preview a clip
+- [ ] decide whether packs are per-user or shipped with the app (currently project-root only)
 
 ---
 
 ## Known issues
 
-- There is no `voicepack/` directory and no custom-voice-pack pipeline. Audio is
-  SAPI (Windows) only; there is nothing to import, and `TODO.md`, `README.md`
-  and `package.json` never referenced one. If a pack format is wanted it has to
-  be designed first, not verified.
+- Voice packs are read from the project-root `voicepack/` folder only. There is no
+  UI to choose or preview a pack, and a packaged build has to ship the folder beside
+  the app for packs to be found. Per-user packs are the obvious next step.
 - The `4` o'clock arc holds ~2000 more samples than the other two at the full
   16000-sample capacity (sampler overflow). The gaps are still empty, so it is
   a density imbalance, not a placement error. Low priority.

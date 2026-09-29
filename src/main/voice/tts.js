@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
+const voicepack = require('./voicepack');
 
 const pExecFile = promisify(execFile);
 
@@ -77,13 +78,19 @@ async function listVoices(force) {
 
 async function synthesize(text, opts) {
   const options = opts || {};
+  const clean = String(text || '').replace(/```[\s\S]*?```/g, ' ').replace(/[*_`#>]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!clean) return { audio: null, empty: true };
+
+  // A pack hit comes before the platform check on purpose: a voice pack is
+  // just a file read, so it works on macOS and Linux too, where SAPI cannot run.
+  const pack = await voicepack.resolve(clean).catch(() => null);
+  if (pack) return pack;
+
   if (process.platform !== 'win32') {
     const err = new Error('Text-to-speech is only implemented for the Windows SAPI engine on this platform.');
     err.code = 'E_TTS_PLATFORM';
     throw err;
   }
-  const clean = String(text || '').replace(/```[\s\S]*?```/g, ' ').replace(/[*_`#>]/g, ' ').replace(/\s+/g, ' ').trim();
-  if (!clean) return { audio: null, empty: true };
 
   const dir = path.join(os.tmpdir(), 'legion-tts');
   await fsp.mkdir(dir, { recursive: true });
@@ -132,7 +139,8 @@ async function synthesize(text, opts) {
     sampleRate: 24000,
     bytes: buf.length,
     durationMs: estimateWavDurationMs(buf),
-    voice: options.voice || null
+    voice: options.voice || null,
+    source: 'sapi'
   };
 }
 
@@ -146,4 +154,4 @@ function estimateWavDurationMs(buf) {
   } catch (_) { return 0; }
 }
 
-module.exports = { listVoices, synthesize };
+module.exports = { listVoices, synthesize, voicepack };

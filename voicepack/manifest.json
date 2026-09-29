@@ -1,0 +1,14 @@
+{
+  "name": "LEGION Example Pack",
+  "version": "1.0.0",
+  "description": "Six example clips, synthesised with the same SAPI engine LEGION already uses. Replace the .wav files with recordings of your own voice; the app does not care which engine produced them. Matching is exact on a normalised phrase, so \"Yes.\", \"yes\" and \"  YES! \" all hit the same clip. Anything not listed here falls through to normal SAPI synthesis.",
+  "enabled": true,
+  "entries": [
+    { "phrase": "Yes.", "file": "yes.wav" },
+    { "phrase": "No.", "file": "no.wav" },
+    { "phrase": "On it.", "file": "on-it.wav" },
+    { "phrase": "All done.", "file": "all-done.wav" },
+    { "phrase": "I'm listening.", "file": "im-listening.wav" },
+    { "phrase": "I didn't understand that.", "file": "i-didnt-understand.wav" }
+  ]
+}

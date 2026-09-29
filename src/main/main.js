@@ -467,6 +467,7 @@ function registerIpc() {
   handle('tools:confirm', async (token, approved) => toolManager.resolveConfirmation(String(token || ''), !!approved));
 
   handle('voice:voices', async () => tts.listVoices(true));
+  handle('voice:pack', async () => tts.voicepack.describe());
   handle('voice:capabilities', async () => stt.capabilities());
   handle('voice:listenStop', async () => ({ stopped: stt.stopActive() }));
   handle('voice:wakeStatus', async () => wake.status());
@@ -517,7 +518,7 @@ function registerIpc() {
         rate: o.rate !== undefined ? o.rate : v.rate,
         volume: o.volume !== undefined ? o.volume : v.volume
       });
-      return { ok: true, format: res.format, sampleRate: res.sampleRate, durationMs: res.durationMs, audioBase64: res.audio ? res.audio.toString('base64') : null };
+      return { ok: true, format: res.format, sampleRate: res.sampleRate, durationMs: res.durationMs, source: res.source || 'sapi', pack: res.pack || null, audioBase64: res.audio ? res.audio.toString('base64') : null };
     } catch (err) {
       setError(err);
       return { ok: false, error: { message: err.message, code: err.code || 'E_TTS' } };
