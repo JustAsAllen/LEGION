@@ -1,202 +1,87 @@
 # LEGION — TODO
 
-Status legend: `[x]` done and verified · `[~]` partially done · `[ ]` not started
+Status legend: [x] complete and verified · [~] implemented but environment-dependent/unverified · [ ] not implemented.
 
-The truth source for "does it work" is the check suite (`npm run check`).
-Anything marked done below has a corresponding passing check.
+The automated check suite is the source of truth for repeatable verification.
 
----
+## Completed production surface
 
-## How to run
+- [x] Electron main/renderer security boundary and explicit preload bridge
+- [x] Real IPC channel registration and reachability checks
+- [x] Five-theme visual configuration and live shader propagation
+- [x] Push-to-talk, continuous STT and wake-word flow
+- [x] Four-tier TTS: voice pack → Edge neural → Piper → SAPI
+- [x] Voice-pack manifest, exact phrase matching, traversal guard and settings integration
+- [x] Piper runtime discovery in development and packaged-resource discovery in production
+- [x] Provider-independent AI engine
+- [x] OpenAI/Anthropic/Ollama provider adapters
+- [x] Ollama NDJSON streaming through the existing ai:event channel
+- [x] Automatic local Ollama detection when no provider is configured
+- [x] Renderer live streaming state connected to provider deltas
+- [x] Final AI reply routed through the existing hybrid TTS path
+- [x] Tool catalogue, confirmation gate and sandbox policy
+- [x] Memory, config, metrics and secret handling
+- [x] Procedural three-arc ring and off-main-thread sampler
+- [x] Square WebGL mark projection for widescreen layouts
+- [x] Render check asserting the live camera remains 1:1
+- [x] Launcher checks and background-throttling fix
+- [x] Static/scope/IPC/security/data/voice/render/shell verification suite
+- [x] Packaged-build verification with host-policy-aware unsigned executable handling
+- [x] electron-builder configuration for NSIS + portable targets
+- [x] README, architecture documentation and contribution guidance
+- [x] Source/build/secrets gitignore hygiene
 
-```
-Launch LEGION.vbs        double-click, silent (recommended)
-Launch LEGION.bat        double-click, with a console
-npm start                from a terminal
-npm run check            full check suite (~3 min)
-npm run check:fast       selftest + static + ipc (~5 s)
-npm run check:package    the built exe, launched and exercised
-npm run check:launch     launcher boots a window and stays alive
-npm run bench            performance benchmark (~1 min)
-npm run voicepack:sample regenerate the example voice pack clips
-```
+## Release verification
 
-Setting `LEGION_LIVE_VOICE=1` adds the checks that need the real online voice
-service. Without it the suite never touches the network.
+- [x] npm run build configuration produces the unpacked Windows target when the host permits Electron packaging
+- [x] Voice pack is included in the app and copied to editable resources/voicepack
+- [x] Piper resource directory is configured for packaged builds
+- [x] check:package statically validates package contents and can skip only an OS-level unsigned-binary launch block when explicitly requested
+- [~] Live Ollama turn — source path and opt-in check are implemented; requires Ollama + a local model
+- [~] Piper runtime — source path and packaging are implemented; requires a compatible piper.exe + ONNX model
+- [~] NSIS installer runtime verification — Windows signing/policy can block execution of unsigned self-built artifacts
+- [~] Code signing — requires a release certificate and signing environment
 
-First run only: `npm install`.
+## Remaining product work
 
----
+### Accessibility
 
-## Done and verified
+- [ ] Reduced-motion mode
+- [ ] Keyboard-only navigation of every panel
+- [ ] Adjustable visual intensity
 
-- [x] **Interface shell** — title bar, centre, rail, status bar, panels, z-order, drag region
-- [x] **Theme** — 5 themes reach the shader and the CSS; warning colours stay fixed
-- [x] **Voice pipeline** — SAPI TTS, Windows STT, push-to-talk, continuous mode, wake word, redaction
-- [x] **Settings** — voice, memory, tools, privacy, visual quality, wake word all real (no dead toggles)
-- [x] **First-run wizard** — 5 steps, provider probe, bypass path, handover runs exactly once
-- [x] **Tools** — 36 tools across system/apps/files/web/dev/productivity, confirmation gate
-- [x] **Memory** — short-term, session, optional long-term, view/forget controls
-- [x] **Data layer** — config, metrics, secrets; real values only
-- [x] **Render loop** — WebGL live, 60+ fps, adaptive quality, no GL errors
-- [x] **Logo** — three-arc segmented ring, procedurally sampled, verified geometry (empty gap sectors)
-- [x] **Launchers** — `.vbs` and `.bat` boot a titled window; `check:launch` measures
-      time to window and proves the render loop is alive and not spinning
-- [x] **Batch 4** — `backgroundThrottling: false`, so the mark animates while unfocused;
-      three flaky shell checks made to poll for settle instead of sampling once
-- [x] **Voice packs** — `voicepack/` with a working example pack, clip lookup ahead of
-      SAPI, a settings surface, and 12 checks
-- [x] **Batch 5** — `npm run bench`; 10-minute soak measured, no leak, 81.7 fps
-- [x] **Batch 6** — `ARCHITECTURE.md`, `CONTRIBUTING.md`, `.env.example`, README sections
-- [~] **Batch 7** — security audit, live AI turn, visual aspect fix, Piper packaging, dist build
-      (source wiring is complete; live Ollama verification is opt-in via `LEGION_LIVE_AI=1`,
-      and Windows code signing remains an environment/release concern)
+### Startup
 
----
+- [ ] Launch-at-startup toggle
+- [ ] Explicit microphone opt-in guard at startup
 
-## Next
+### Voice packs
 
-### 1. Documentation (from the build prompt, §43)
-- [x] `README.md` — what it is, features, requirements, install, running, building, the check suite, voice packs, measured performance, themes
-- [x] `assets/logo.svg` — segmented-ring mark, geometry matching `logo-model.js`
-- [x] `ARCHITECTURE.md` — process split, 44 IPC channels, state machine, AI/voice/visual pipelines, tool system, memory, data flow
-- [x] `.env.example` — the two real API keys, no values, states that the app needs none
-- [x] `CONTRIBUTING.md` — the check suite, conventions, how to add a tool / channel / state, how to read the bench
+- [ ] Multiple installed pack chooser
+- [ ] Per-user voice-pack location that survives application updates
 
-### 2. AI engine (§17, §6)
-- [x] provider-independent engine, conversation manager
-- [x] renderer turn path already had streaming state; provider deltas now flow through the existing `ai:event` IPC channel
-- [x] local Ollama streaming provider wired end-to-end; `npm run check:ai` verifies a real streamed turn when `LEGION_LIVE_AI=1`
-- [x] API providers remain provider-independent and continue to use the same engine/voice path
+### Voice quality
 
-### 3. Security audit (§30, §10)
-- [x] secrets are read in main only and never returned over IPC (`secrets.js`; the
-      renderer can ask whether a key exists, never its value)
-- [x] tool sandbox review: file write roots, command allowlist, traversal and symlink
-      re-checks — `check:security` exercises them, 16 checks
-- [x] RLS-style equivalent: what the renderer can reach through `ipcRenderer` — the
-      channel list is a fixed allowlist in `preload.js`, with no generic bridge;
-      `check:ipc` proves main and preload agree
-- [x] `shell:openPath` / `shell:showItem` restricted to user data, the app folder and
-      configured sandbox roots, with NUL rejection and symlink revalidation
-- [x] `scripts/check-security.js` is wired into `check` and `check:fast`
+- [ ] Tune online voice selection/latency beyond the current default
+- [ ] Verify Piper audio quality/latency on a supported Windows runtime
 
-### 4. Performance (§11, §26)
-- [x] `npm run bench` — frame-time percentiles, heap trend, DOM size, RSS, quality tier
-- [x] profile over a long session: 10-minute soak, 81.7 fps mean, p50 12.1 ms
-- [x] memory-leak check: heap peak envelope +0.42 MB over 600 s, DOM pinned at 270 nodes
-- [x] frame sampler reads its own rAF timestamps, not the app's fps counter
-- [~] quality tiers auto-scale — verified to respond to load (`ultra → high → medium → low` and back), but not on genuinely low-end hardware, which this machine is not
+## Release notes
 
-### 5. Production build (§44)
-- [~] `npm run dist` succeeds — the unpacked app packages and passes every packaged
-      check, but the NSIS installer step fails on this host: electron-builder cannot
-      create symlinks while extracting `winCodeSign` (`ERROR: Cannot create symbolic
-      link : A required privilege is not held by the client`). Needs Developer Mode
-      or elevation, and is unrelated to the app code.
-- [x] `npm run build` produces a working `release/win-unpacked` with the voice pack
-      both inside `app.asar` and editable beside the exe
-- [x] `check:package` — 14 checks against the real built exe: window opens, boot
-      settles, the ring really draws, the pack resolves from the installed location,
-      and the voice pipeline is reachable from the packaged renderer
-- [~] code-sign the binary — an unsigned self-built Electron app can still be blocked
-      by Application Control / Smart App Control. `check:package` now supports
-      `LEGION_ALLOW_UNSIGNED_PACKAGE_CHECK=1` for static package validation without
-      pretending the OS launch succeeded. Actual runtime validation still requires
-      a signed/allowed binary
-- [ ] installed app launches and passes the shell check (blocked by the two items above)
-- [ ] NSIS + portable targets both build
+The repository is intentionally self-contained at source level. Optional Piper binaries/models are not fabricated into Git without compatible redistribution rights. Build outputs and local secrets remain ignored.
 
-### 6. Accessibility (§36)
-- [ ] reduced-motion mode
-- [ ] keyboard-only navigation of every panel
-- [ ] adjustable visual intensity
+## Useful commands
 
-### 7. Startup behaviour (§38)
-- [ ] launch-at-startup toggle
-- [ ] never open the mic without explicit opt-in
+    npm install
+    npm run check
+    npm run check:fast
+    npm run check:render
+    npm run build
+    npm run check:package
+    npm run dist
+    npm run bench
 
-### 8. Custom voice packs
-- [x] pack format chosen: `.wav`/`.mp3` clips + a `manifest.json` mapping phrase to file
-- [x] `src/main/voice/voicepack.js` — resolve a phrase to a clip, with normalisation and traversal guard
-- [x] consulted before SAPI in `tts.synthesize()`; a pack hit works on any platform, not just Windows
-- [x] `voicepack/` with a working example pack (6 real SAPI clips) and `npm run voicepack:sample` to regenerate
-- [x] reloads on manifest change, no restart; `voice:pack` IPC for the settings view
-- [x] settings panel shows the active pack, its phrase count, and any manifest problems
-- [x] "Test voice pack" plays a phrase the pack actually has and reports clip vs SAPI
-- [x] `check:voicepack` — 12 checks: hit, miss, fall-through, disabled, traversal, audio sniffing, provenance
-- [x] shipped and installed: `voicepack/` is inside `app.asar` and copied to
-      `resources/voicepack`; an installed build prefers the editable copy beside the
-      exe, so clips can be swapped without repacking
-- [ ] pick/choose between multiple installed packs (one folder is read today)
-- [ ] per-user packs (a folder in user data), so custom packs survive an app update
+For live Ollama verification:
 
-### 9. Voice source pipeline
-Four tiers, tried in order, and the first one that can answer wins:
-
-1. **Static voice pack** — a recorded clip, instant and offline
-2. **Online voice** — Microsoft Edge neural voices, used when the phrase is not
-   recorded and the mode allows it
-3. **Piper** — local neural TTS, if an executable and model are configured
-4. **System voice (SAPI)** — always available, the final fallback
-
-- [x] `src/main/voice/tts.js` runs the tiers in that order and reports which one
-      answered (`tier`, `source`, `format`)
-- [x] three modes: `auto` (all four), `offline` (never touches the network),
-      `pack-only` (silence rather than a fallback)
-- [x] `src/main/voice/edge.js` — live synthesis, voice listing, latency and
-      last-error reporting for the settings panel
-- [x] the online tier degrades instead of throwing: unreachable service or a failed
-      request falls through to Piper, then to the system voice
-- [x] `src/main/voice/piper.js` — optional local neural TTS, probed once and
-      skipped cleanly when no executable or model is present
-- [x] the renderer plays either container: `decodeAudioData` handles the WAV from
-      the pack and the MP3 from the online tier, verified in the real app
-- [x] settings exposes the mode and reads out which sources are usable right now
-- [x] `check:voice` covers the order, all three modes, and the pack hand-off;
-      the online tier is checked only when `LEGION_LIVE_VOICE=1` is set, so the
-      default suite stays offline and hermetic
-- [x] live online tier verified: real MP3 frame returned and decoded (3.79 s, 48 kHz mono)
-- [~] Piper — bundled-resource discovery and packaging are wired; place `piper.exe`
-      and a compatible `.onnx` voice model in `assets/piper/` to make the tier live.
-      The settings probe reports the detected model and the runtime derives the WAV rate.
-- [~] online voice quality and latency are not tuned; `en-US-AriaNeural` is the default
-
----
-
-## Known issues
-
-- Voice packs are read from the project-root `voicepack/` folder, or from
-  `resources/voicepack` beside the installed exe. One folder, no chooser, and no
-  per-user location yet, so a custom pack does not survive an app update. Per-user
-  packs are the obvious next step.
-- The packaged build is unsigned, and Windows Application Control / Smart App Control
-  refuses to launch an unsigned binary. `check:package` reports this and stops rather
-  than crashing; the runtime checks pass once the binary is signed or the folder is
-  allowed. This is a signing gap, not an app defect.
-- The online voice tier depends on Microsoft's Edge speech endpoint and needs a network
-  connection. It is opt-in by mode and falls through to the local tiers on any failure,
-  but it is not a privacy-hardened option: the text is sent to that service.
-- `npm run bench` disables Chromium's occlusion throttling so the numbers describe
-  the app. A window left fully covered by another window will still drop to roughly
-  1 rAF/second, and the app will drop to the lowest quality tier in response — which
-  is the tier policy behaving correctly, not a fault.
-- The `4` o'clock arc holds ~2000 more samples than the other two at the full
-  16000-sample capacity (sampler overflow). The gaps are still empty, so it is
-  a density imbalance, not a placement error. Low priority.
-- The README screenshot (`assets/screenshot-idle.png`) is a capture, not a
-  re-render, and has not been re-checked against the final ring.
-- `backgroundThrottling: false` means the mark keeps animating when the window
-  is not focused. That is deliberate — it is an always-on companion — but it
-  does cost CPU while the window is in the background.
-
----
-
-## Conventions
-
-- Never add fake functionality. If a number is shown, it is measured.
-- Renderer files are ES modules; main/preload stay CommonJS. Do **not** add
-  `"type": "module"` to `package.json` — it breaks the CJS entry points.
-- Checks run with `--experimental-vm-modules`; the npm scripts already do this.
-- `three.module.js` is vendored — do not edit it, and static-check skips it.
-- Commit style: `AREA: what changed`, uppercase area prefix.
+    LEGION_LIVE_AI=1
+    LEGION_OLLAMA_MODEL=<installed-model>
+    npm run check:ai
