@@ -20,6 +20,11 @@ const { execFile } = require('child_process');
  */
 
 const PROBE_DIRS = [
+  // Development checkout: keep the runtime assets outside src/ so they can
+  // be replaced without touching application code.
+  path.resolve(__dirname, '..', '..', '..', 'assets', 'piper'),
+  // Production: electron-builder copies this directory as an extra resource.
+  process.resourcesPath ? path.join(process.resourcesPath, 'piper') : '',
   path.join(process.env.LOCALAPPDATA || '', 'Programs', 'piper'),
   path.join(process.env.USERPROFILE || '', 'piper'),
   'C:\\Program Files\\Piper',
@@ -27,6 +32,7 @@ const PROBE_DIRS = [
 ];
 
 let cache = null;
+let cacheKey = '';
 
 function candidateBins() {
   const out = [];
@@ -61,8 +67,11 @@ async function locate(opts) {
 }
 
 async function probe(opts) {
-  if (cache) return cache;
-  const found = await locate(opts);
+  const options = opts || {};
+  const key = `${options.piperPath || ''}|${options.piperModel || ''}`;
+  if (cache && cacheKey === key) return cache;
+  const found = await locate(options);
+  cacheKey = key;
   cache = {
     available: !!found,
     bin: found ? found.bin : null,
@@ -102,7 +111,7 @@ async function synthesize(text, opts) {
     return {
       audio: buf,
       format: 'wav',
-      sampleRate: 22050,
+      sampleRate: readWavSampleRate(buf),
       bytes: buf.length,
       source: 'piper',
       tier: 'offline',
@@ -113,6 +122,11 @@ async function synthesize(text, opts) {
   } finally {
     await fsp.rm(work, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+function readWavSampleRate(buf) {
+  try { return buf.length >= 28 && buf.toString('ascii', 0, 4) === 'RIFF' ? buf.readUInt32LE(24) : 0; }
+  catch (_) { return 0; }
 }
 
 function describe() {
