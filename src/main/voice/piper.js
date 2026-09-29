@@ -20,6 +20,11 @@ const { execFile } = require('child_process');
  */
 
 const PROBE_DIRS = [
+  // Development checkout: keep the runtime assets outside src/ so they can
+  // be replaced without touching application code.
+  path.resolve(__dirname, '..', '..', '..', 'assets', 'piper'),
+  // Production: electron-builder copies this directory as an extra resource.
+  process.resourcesPath ? path.join(process.resourcesPath, 'piper') : '',
   path.join(process.env.LOCALAPPDATA || '', 'Programs', 'piper'),
   path.join(process.env.USERPROFILE || '', 'piper'),
   'C:\\Program Files\\Piper',
@@ -27,6 +32,7 @@ const PROBE_DIRS = [
 ];
 
 let cache = null;
+let cacheKey = '';
 
 function candidateBins() {
   const out = [];
@@ -47,22 +53,27 @@ async function locate(opts) {
     const bin = configured;
     if (!fs.existsSync(bin)) return null;
     if (!model || !fs.existsSync(model)) return null;
-    return { bin, model };
+    const config = model + '.json';
+    if (!fs.existsSync(config)) return null;
+    return { bin, model, config };
   }
 
   for (const bin of candidateBins()) {
     if (!fs.existsSync(bin)) continue;
     // Prefer a model sitting next to the binary, the usual layout.
-    const sibling = fs.readdirSync(path.dirname(bin)).find((f) => f.endsWith('.onnx'));
+    const sibling = fs.readdirSync(path.dirname(bin)).find((f) => f.endsWith('.onnx') && fs.existsSync(path.join(path.dirname(bin), f + '.json')));
     const modelPath = sibling ? path.join(path.dirname(bin), sibling) : '';
-    if (modelPath) return { bin, model: modelPath };
+    if (modelPath) return { bin, model: modelPath, config: modelPath + '.json' };
   }
   return null;
 }
 
 async function probe(opts) {
-  if (cache) return cache;
-  const found = await locate(opts);
+  const options = opts || {};
+  const key = `${options.piperPath || ''}|${options.piperModel || ''}`;
+  if (cache && cacheKey === key) return cache;
+  const found = await locate(options);
+  cacheKey = key;
   cache = {
     available: !!found,
     bin: found ? found.bin : null,
@@ -90,7 +101,7 @@ async function synthesize(text, opts) {
 
   try {
     await new Promise((resolve, reject) => {
-      const child = execFile(found.bin, ['--model', found.model, '--output_file', outFile], {
+      const child = execFile(found.bin, ['--model', found.model, '--config', found.config, '--output_file', outFile], {
         timeout: Math.max(15000, clean.length * 200), windowsHide: true, maxBuffer: 1024 * 1024
       }, (err) => (err ? reject(new Error(`Piper failed: ${err.message}`)) : resolve()));
       child.stdin.on('error', () => { /* piper may exit before we finish writing */ });
@@ -102,7 +113,7 @@ async function synthesize(text, opts) {
     return {
       audio: buf,
       format: 'wav',
-      sampleRate: 22050,
+      sampleRate: readWavSampleRate(buf),
       bytes: buf.length,
       source: 'piper',
       tier: 'offline',
@@ -113,6 +124,11 @@ async function synthesize(text, opts) {
   } finally {
     await fsp.rm(work, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+function readWavSampleRate(buf) {
+  try { return buf.length >= 28 && buf.toString('ascii', 0, 4) === 'RIFF' ? buf.readUInt32LE(24) : 0; }
+  catch (_) { return 0; }
 }
 
 function describe() {

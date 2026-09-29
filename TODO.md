@@ -48,9 +48,9 @@ First run only: `npm install`.
       SAPI, a settings surface, and 12 checks
 - [x] **Batch 5** — `npm run bench`; 10-minute soak measured, no leak, 81.7 fps
 - [x] **Batch 6** — `ARCHITECTURE.md`, `CONTRIBUTING.md`, `.env.example`, README sections
-- [ ] **Batch 7 (next)** — security audit, a live AI turn against a real provider, dist build
-      (security audit and the unpacked build are done; see §3 and §5. Still open: a real
-      provider turn, and a signed installer)
+- [~] **Batch 7** — security audit, live AI turn, visual aspect fix, Piper packaging, dist build
+      (source wiring is complete; live Ollama verification is opt-in via `LEGION_LIVE_AI=1`,
+      and Windows code signing remains an environment/release concern)
 
 ---
 
@@ -65,8 +65,9 @@ First run only: `npm install`.
 
 ### 2. AI engine (§17, §6)
 - [x] provider-independent engine, conversation manager
-- [ ] verify an end-to-end live AI turn against a real provider (API key + network required)
-- [ ] local LLM provider (optional, §39)
+- [x] renderer turn path already had streaming state; provider deltas now flow through the existing `ai:event` IPC channel
+- [x] local Ollama streaming provider wired end-to-end; `npm run check:ai` verifies a real streamed turn when `LEGION_LIVE_AI=1`
+- [x] API providers remain provider-independent and continue to use the same engine/voice path
 
 ### 3. Security audit (§30, §10)
 - [x] secrets are read in main only and never returned over IPC (`secrets.js`; the
@@ -98,9 +99,11 @@ First run only: `npm install`.
 - [x] `check:package` — 14 checks against the real built exe: window opens, boot
       settles, the ring really draws, the pack resolves from the installed location,
       and the voice pipeline is reachable from the packaged renderer
-- [ ] code-sign the binary — an unsigned self-built Electron app is blocked outright
-      by Application Control / Smart App Control on this machine, so `check:package`
-      cannot exercise the built exe until it is signed or the folder is allowed
+- [~] code-sign the binary — an unsigned self-built Electron app can still be blocked
+      by Application Control / Smart App Control. `check:package` now supports
+      `LEGION_ALLOW_UNSIGNED_PACKAGE_CHECK=1` for static package validation without
+      pretending the OS launch succeeded. Actual runtime validation still requires
+      a signed/allowed binary
 - [ ] installed app launches and passes the shell check (blocked by the two items above)
 - [ ] NSIS + portable targets both build
 
@@ -154,7 +157,9 @@ Four tiers, tried in order, and the first one that can answer wins:
       the online tier is checked only when `LEGION_LIVE_VOICE=1` is set, so the
       default suite stays offline and hermetic
 - [x] live online tier verified: real MP3 frame returned and decoded (3.79 s, 48 kHz mono)
-- [~] Piper — code is complete but unverified; no executable or model is installed here
+- [~] Piper — bundled-resource discovery and packaging are wired; place `piper.exe`
+      and a compatible `.onnx` voice model in `assets/piper/` to make the tier live.
+      The settings probe reports the detected model and the runtime derives the WAV rate.
 - [~] online voice quality and latency are not tuned; `en-US-AriaNeural` is the default
 
 ---

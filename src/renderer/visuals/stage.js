@@ -157,16 +157,18 @@ export class LogoStage {
     this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(w, h, false);
     this.field.uniforms.uPixelRatio.value = dpr;
-    this.camera.aspect = w / h;
+    // Keep the mark in a square projection. The window may be widescreen, but the
+    // ring must retain equal X/Y scale instead of inheriting the viewport ratio.
+    this.camera.aspect = 1;
+    this.camera.updateProjectionMatrix();
     this._fit();
   }
 
   _fit() {
-    const aspect = this.camera.aspect || 1;
     const fov = this.camera.fov * Math.PI / 180;
-    // Frame the ring: ~25 units tall and panoramic, so give the horizontal
-    // budget a wider multiplier than the vertical one.
-    const needH = Math.max(25, 32 / Math.max(aspect, 0.35));
+    // Fit against the vertical viewport; the square projection preserves the
+    // same circular geometry at 16:9, 4:3 and square window sizes.
+    const needH = 32;
     const dist = needH / (2 * Math.tan(fov / 2));
     this.baseDistance = dist;
     this.lookTarget.set(0, 0, 0);
