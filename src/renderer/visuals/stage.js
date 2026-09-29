@@ -157,7 +157,9 @@ export class LogoStage {
     this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(w, h, false);
     this.field.uniforms.uPixelRatio.value = dpr;
-    this.camera.aspect = w / h;
+    // Fix: Set a fixed 1:1 aspect ratio for the camera to keep the circular logo circular.
+    // The viewport will handle scaling to fit different screen sizes.
+    this.camera.aspect = 1.0;
     this._fit();
   }
 
