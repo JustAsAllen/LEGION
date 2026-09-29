@@ -58,6 +58,11 @@
       {
         "from": "voicepack",
         "to": "voicepack"
+      },
+      {
+        "from": "assets/piper",
+        "to": "piper",
+        "filter": ["**/*"]
       }
     ],
     "win": {
