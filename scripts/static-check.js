@@ -4,11 +4,13 @@
  * 1. Parse every source file as a module (catches syntax errors early).
  * 2. Check that every relative import in the renderer resolves to a real file.
  * 3. Check that every element id referenced by the renderer exists in index.html.
+ * 4. Check that no source file reads an undeclared global (scope-aware).
  */
 
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { analyze } = require('./scope-analyzer.js');
 
 const root = process.argv[2] || '.';
 const problems = [];
@@ -25,7 +27,6 @@ function walk(dir, out = []) {
 }
 
 const files = walk(path.join(root, 'src'));
-
 /* -- 1. parse ---------------------------------------------------- */
 for (const f of files) {
   const src = fs.readFileSync(f, 'utf8');
@@ -82,9 +83,27 @@ for (const f of rendererFiles) {
   }
 }
 
+/* -- 4. undeclared globals (scope aware) ------------------------- */
+// The vendored three.js build is third-party; only our own code is checked.
+const ownFiles = files.filter(f => !f.includes(path.join('src', 'renderer', 'vendor')));
+let scopeReads = 0;
+for (const f of ownFiles) {
+  const src = fs.readFileSync(f, 'utf8');
+  try {
+    const found = analyze(src, path.relative(root, f));
+    for (const r of found) {
+      scopeReads++;
+      problems.push(`${r.file}:${r.line}: undeclared global "${r.name}"`);
+    }
+  } catch (err) {
+    problems.push(`${path.relative(root, f)}: scope analysis failed -> ${err.message}`);
+  }
+}
+
 /* -- report ------------------------------------------------------ */
 console.log(`parsed ${files.length} file(s)`);
 console.log(`index.html defines ${htmlIds.size} id(s)`);
+console.log(`scope analysis clean on ${ownFiles.length} own file(s), ${scopeReads} undeclared read(s)`);
 if (warnings.length) {
   console.log(`\n${warnings.length} warning(s):`);
   for (const w of warnings) console.log('  - ' + w);

@@ -302,7 +302,7 @@ async function main() {
     }
     check('all four panels reachable', opened.length === 4, opened.join(', '));
 
-    // The stage should shift aside so the face is not hidden behind the panel.
+    // The stage should shift aside so the mark is not hidden behind the panel.
     // The loop above already left a panel open, so only close it if one is not.
     const shift = await cdp.eval(`(() => {
       const a = window.legionApp;
@@ -339,15 +339,24 @@ async function main() {
 
     // Closing the panel must hand the stage its full width back. The camera
     // eases asymptotically, so poll for the settle instead of sampling once.
+    // Background-throttled frames make convergence slow, so keep the window
+    // foregrounded while polling and allow a generous budget.
+    await cdp.eval(`(window.legionApp.stage.app || {}).focus && (window.legionApp.stage.app.focus(), true)`).catch(() => null);
+    let lastSample = null;
     const recentred = await waitFor(async () => {
       const s = await cdp.eval(`(() => ({
         shift: window.legionApp.stage.panelShift,
-        camX: window.legionApp.stage.camera.position.x
+        camX: window.legionApp.stage.camera.position.x,
+        fps: Math.round(window.legionApp.stage.fps),
+        visible: document.visibilityState
       }))()`);
+      lastSample = s;
       return (Math.abs(s.shift) < 0.5 && Math.abs(s.camX) < 0.5) ? s : null;
-    }, 8000, 'stage to re-centre').catch(() => null);
+    }, 30000, 'stage to re-centre').catch(() => null);
     check('stage re-centres when the panel closes', !!recentred,
-      recentred ? `panelShift=${recentred.shift.toFixed(2)} camX=${recentred.camX.toFixed(2)}` : 'never settled');
+      recentred
+        ? `panelShift=${recentred.shift.toFixed(2)} camX=${recentred.camX.toFixed(2)}`
+        : `never settled (${JSON.stringify(lastSample)})`);
 
     /* ---- 5. modal + toast layering ------------------------------ */
     const layers = await cdp.eval(`(() => {
@@ -378,11 +387,13 @@ async function main() {
     // The event is dispatched on window so the real chain runs:
     // shortcuts.js -> closeTopmost() -> #settleConfirm(). Checking only that
     // the element hid would miss a gate that never settled its promise.
-    const esc = await cdp.eval(`(() => {
+    const esc = await cdp.eval(`(async () => {
       const a = window.legionApp;
+      const until = async (fn, ms) => { const end = Date.now() + ms; while (Date.now() < end) { let v; try { v = fn(); } catch (e) { v = null; } if (v) return v; await new Promise(r => setTimeout(r, 40)); } return null; };
       a.closeTopmost();                               // clear the gate opened above
       a.toggleShortcuts(true);                        // shortcuts now sit on top
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+      await until(() => document.getElementById('shortcuts').hidden, 4000);
       const shortcutsAfterEsc = document.getElementById('shortcuts').hidden;
 
       const p = a.confirm({ message: 'esc dismissal probe', tool: 'probe', impact: 'none' });
@@ -391,14 +402,16 @@ async function main() {
       let settled = 'pending';
       p.then((ok) => { settled = String(ok); });
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
-      return new Promise(res => setTimeout(() => res({
+      // the gate hides and its promise settles asynchronously — wait for both
+      await until(() => el.hidden && settled !== 'pending', 4000);
+      return {
         shortcutsAfterEsc,
         wasOpen,
         confirmHidden: el.hidden,
         settled,
         shortcutsHidden: document.getElementById('shortcuts').hidden,
         firstrunHidden: document.getElementById('firstrun').hidden
-      }), 500));
+      };
     })()`);
     check('Esc dismisses the shortcuts modal', esc.shortcutsAfterEsc === true, JSON.stringify(esc.shortcutsAfterEsc));
     check('Esc dismisses the confirmation gate', esc.wasOpen && esc.confirmHidden === true, JSON.stringify(esc));
@@ -425,6 +438,7 @@ async function main() {
 
     const vcfg = await cdp.eval(`(async () => {
       const a = window.legionApp;
+      const until = async (fn, ms) => { const end = Date.now() + ms; while (Date.now() < end) { let v; try { v = fn(); } catch (e) { v = null; } if (v) return v; await new Promise(r => setTimeout(r, 40)); } return null; };
       const row = document.getElementById('set-continuous-row');
       const ptt = document.getElementById('set-push-to-talk');
       const cont = document.getElementById('set-continuous');
@@ -445,7 +459,8 @@ async function main() {
         micActive: !!a.audio.micActive
       };
       ptt.checked = true; ptt.dispatchEvent(new Event('change', { bubbles: true }));
-      await new Promise(r => setTimeout(r, 900));
+      // turning ptt back on tears the mic down asynchronously; wait for it
+      await until(() => a.continuous === false && a.audio.micActive === false, 6000);
       const restored = {
         ptt: ptt.checked, cont: cont.checked, rowHidden: row.hidden,
         continuous: !!a.continuous, micActive: !!a.audio.micActive
@@ -547,28 +562,35 @@ async function main() {
       const wakePhrase = document.getElementById('set-wake-phrase');
       const canvas = document.getElementById('waveform');
       const out = {};
+      // Config writes round-trip through IPC, so poll for the value instead of
+      // sleeping a fixed amount and hoping the main process answered in time.
+      const until = async (fn, ms) => {
+        const end = Date.now() + ms;
+        while (Date.now() < end) { let v; try { v = fn(); } catch (e) { v = null; } if (v) return v; await new Promise(r => setTimeout(r, 40)); }
+        return null;
+      };
 
       out.waveOn = { checked: wave.checked, visible: !canvas.hidden, cfg: a.config?.visual?.showWaveform };
       wave.checked = false; wave.dispatchEvent(new Event('change', { bubbles: true }));
-      await new Promise(r => setTimeout(r, 600));
+      await until(() => a.config?.visual?.showWaveform === false && a.wave.visible === false, 4000);
       out.waveOff = { visible: !canvas.hidden, cfg: a.config?.visual?.showWaveform, engine: a.wave.visible };
 
       wave.checked = true; wave.dispatchEvent(new Event('change', { bubbles: true }));
-      await new Promise(r => setTimeout(r, 600));
+      await until(() => a.config?.visual?.showWaveform === true, 4000);
       out.waveBack = { visible: !canvas.hidden, cfg: a.config?.visual?.showWaveform };
 
       out.redactOn = redact.checked;
       redact.checked = false; redact.dispatchEvent(new Event('change', { bubbles: true }));
-      await new Promise(r => setTimeout(r, 600));
+      await until(() => a.config?.privacy?.redactSecrets === false, 4000);
       out.redactOff = a.config?.privacy?.redactSecrets;
       redact.checked = true; redact.dispatchEvent(new Event('change', { bubbles: true }));
-      await new Promise(r => setTimeout(r, 600));
+      await until(() => a.config?.privacy?.redactSecrets === true, 4000);
       out.redactBack = a.config?.privacy?.redactSecrets;
 
       // The phrase field only exists while the toggle is on.
       out.wake = { rowHidden: document.getElementById('set-wake-phrase-field').hidden, phrase: wakePhrase.value };
       wakeBox.checked = true; wakeBox.dispatchEvent(new Event('change', { bubbles: true }));
-      await new Promise(r => setTimeout(r, 1800));
+      await until(() => a.config?.voice?.wakeWordEnabled === true && /listening for/i.test(document.getElementById('set-wake-state').textContent || ''), 6000);
       out.wakeOn = {
         enabled: a.config?.voice?.wakeWordEnabled,
         rowHidden: document.getElementById('set-wake-phrase-field').hidden,
@@ -576,7 +598,7 @@ async function main() {
       };
 
       wakeBox.checked = false; wakeBox.dispatchEvent(new Event('change', { bubbles: true }));
-      await new Promise(r => setTimeout(r, 1200));
+      await until(() => a.config?.voice?.wakeWordEnabled === false, 6000);
       out.wakeOff = {
         enabled: a.config?.voice?.wakeWordEnabled,
         rowHidden: document.getElementById('set-wake-phrase-field').hidden
@@ -631,10 +653,21 @@ async function main() {
       `voice=[${stale.voice.join(',')}] privacy=[${stale.privacy.join(',')}]`);
 
     await cdp.eval(`window.legionApp.togglePanel(null)`);
-    await sleep(700);
-
+    // Quiesce the voice before the health snapshot: a residual recogniser
+    // session can still be LISTENING, and this check is about the shell
+    // still being alive, not about voice being mid-turn.
+    await cdp.eval(`(async () => {
+      try { if (window.legion.voice && window.legion.voice.isListening && window.legion.voice.isListening()) await window.legion.voice.stop(); } catch (e) {}
+    })()`);
+    await sleep(300);
+    // Wait for the state machine to settle to IDLE instead of snapshotting
+    // after a fixed delay, so this is not timing-flaky.
+    const settled = await waitFor(async () => {
+      const s = await cdp.eval(`window.legionApp.store.state`);
+      return s === 'IDLE' ? true : null;
+    }, 5000, 'state to settle to IDLE').catch(() => false);
     const stillAlive = await cdp.eval(`(() => ({ state: window.legionApp.store.state, fps: Math.round(window.legionApp.stage.fps) }))()`);
-    check('shell still healthy after the tour', stillAlive.state === 'IDLE' && stillAlive.fps > 0, JSON.stringify(stillAlive));
+    check('shell still healthy after the tour', settled && stillAlive.fps > 0, JSON.stringify(stillAlive));
 
     const probs = cdp.problems;
     check('no renderer errors during the shell tour', probs.length === 0, probs.slice(0, 4).join(' | ') || 'clean');

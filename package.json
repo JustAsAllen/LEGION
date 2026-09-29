@@ -12,12 +12,24 @@
     "dev": "electron . --dev",
     "build": "electron-builder --dir",
     "dist": "electron-builder",
-    "pack": "electron-builder --dir"
+    "pack": "electron-builder --dir",
+    "selftest": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/scope-selftest.js",
+    "check:static": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/static-check.js .",
+    "check:data": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-data.js .",
+    "check:ipc": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-ipc.js .",
+    "check:firstrun": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-firstrun.js .",
+    "check:voice": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-voice.js .",
+    "check:shell": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-shell.js .",
+    "check:render": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-render.js .",
+    "check": "npm run selftest && npm run check:static && npm run check:ipc && npm run check:data && npm run check:voice && npm run check:firstrun && npm run check:shell && npm run check:render",
+    "check:fast": "npm run selftest && npm run check:static && npm run check:ipc",
+    "launch": "electron ."
   },
   "dependencies": {
     "systeminformation": "^5.23.5"
   },
   "devDependencies": {
+    "acorn": "^8.18.0",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
     "three": "^0.170.0"
