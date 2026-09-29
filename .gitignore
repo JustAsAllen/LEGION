@@ -1,23 +1,27 @@
 # dependencies
 node_modules/
 
-# build output and test captures
+# build and distribution output
 dist/
 out/
 release/
-artifacts/
-*.log
+win-unpacked/
+*.asar.unpacked/
 
-# local runtime state — settings.json and secrets.json are written here by
-# Electron under userData, but keep these patterns so a local run that puts
-# them beside the source can never be committed
+# test and benchmark output
+artifacts/
+coverage/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local runtime state and secrets
 secrets.json
 settings.json
 *.secret
 .env
 .env.*
-# The pattern above is correct for real secrets, but it also swallows the
-# documented template. Keep the example, never a real .env.
 !.env.example
 
 # editor and OS noise
