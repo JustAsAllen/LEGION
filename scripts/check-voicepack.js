@@ -97,6 +97,16 @@ function assert(cond, msg) {
     return 'empty input returns early';
   });
 
+  await check('the reply result says where the audio came from', async () => {
+    const res = await tts.synthesize(pack.entries[0].phrase, {});
+    assert(res.source === 'voicepack', `source was "${res.source}"`);
+    // The renderer reports this back to the user, so it has to be a real
+    // phrase to show and not an empty string.
+    assert(typeof res.phrase === 'string' && res.phrase.length, 'no phrase came back to display');
+    assert(res.pack, 'no pack name came back to display');
+    return `${res.pack} will be shown for "${res.phrase}"`;
+  });
+
   await check('phrase normalisation is stable', () => {
     assert(voicepack.normalise("I'm listening.") === "i'm listening", 'apostrophe or period not folded');
     assert(voicepack.slug('I didn\'t understand that.') === 'i-didnt-understand-that', 'slug is wrong');

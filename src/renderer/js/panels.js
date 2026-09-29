@@ -340,6 +340,11 @@ export function settingsPanel(host, app) {
         <button class="btn sm ghost" id="set-list-devices">List microphones</button>
         <span class="fr-hint" id="set-device-hint"></span>
       </div>
+      <div class="row wrap" style="margin-top:10px">
+        <button class="btn sm ghost" id="set-test-pack">Test voice pack</button>
+        <span class="fr-hint" id="set-pack-hint">Not tested</span>
+      </div>
+      <p class="hint" id="set-pack-info" style="margin:2px 0 0"></p>
     </div>
 
     <div class="sec">
@@ -498,6 +503,52 @@ export function settingsPanel(host, app) {
   const $ = (s) => host.querySelector(s);
   const save = (patch) => app.setConfig(patch);
 
+  /**
+   * Speak a phrase the pack actually has, and report where the audio came
+   * from. Speaking a phrase the pack does not have would prove nothing, so the
+   * pack description is fetched first and its first entry is used verbatim.
+   */
+  async function speakPackPhrase(hint) {
+    if (!hint) return;
+    hint.textContent = 'Checking...';
+    let pack = null;
+    try { pack = await app.voicePack(); } catch (err) { hint.textContent = err.message; return; }
+    if (!pack || !pack.enabled || !pack.entries.length) {
+      hint.textContent = 'No pack enabled';
+      return;
+    }
+    const entry = pack.entries[0];
+    hint.textContent = `Playing "${entry.phrase}"...`;
+    const res = await app.speak(entry.phrase);
+    if (res && res.ok && res.source === 'voicepack') {
+      hint.textContent = `Played the pack clip for "${res.phrase || entry.phrase}"`;
+    } else if (res && res.ok) {
+      hint.textContent = 'No clip matched, so SAPI spoke it';
+    } else {
+      hint.textContent = (res && res.error && res.error.message) || 'Playback failed';
+    }
+  }
+
+  /** Describe the pack in the panel, including anything the manifest got wrong. */
+  async function loadPackInfo() {
+    const el = $('#set-pack-info');
+    if (!el) return;
+    let pack = null;
+    try { pack = await app.voicePack(); } catch (_) { pack = null; }
+    if (!pack || !pack.exists) {
+      el.textContent = 'No voicepack folder found. Everything is spoken by the system voice.';
+      return;
+    }
+    if (!pack.enabled) {
+      el.textContent = 'A voicepack folder is present but disabled in manifest.json.';
+      return;
+    }
+    const loose = pack.looseFiles.length ? `, ${pack.looseFiles.length} unnamed clip(s)` : '';
+    el.textContent = `${pack.name || 'Voice pack'}: ${pack.entries.length} recorded phrase(s)${loose}. ` +
+      'Other replies use the system voice. Anything else is spoken by SAPI.';
+    if (pack.problems.length) el.textContent += ' Manifest notes: ' + pack.problems.join('; ') + '.';
+  }
+
   function fill() {
     const c = app.config || {};
     const ai = c.ai || {};
@@ -521,6 +572,8 @@ export function settingsPanel(host, app) {
         sel.value = voices.some((v) => v.name === want) ? want : (voices[0].name);
       });
     }
+
+    loadPackInfo();
 
     $('#set-rate').value = voice.rate ?? 0;
     $('#set-vol').value = voice.volume ?? 100;
@@ -626,6 +679,7 @@ export function settingsPanel(host, app) {
   $('#set-vol').addEventListener('change', (e) => save({ voice: { volume: Number(e.target.value) } }));
 
   $('#set-test-voice').addEventListener('click', () => app.speak('This is LEGION. Voice output is working.'));
+  $('#set-test-pack').addEventListener('click', () => speakPackPhrase($('#set-pack-hint')));
 
   $('#set-list-devices').addEventListener('click', async () => {
     const hint = $('#set-device-hint');

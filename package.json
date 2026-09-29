@@ -26,6 +26,7 @@
     "check": "npm run selftest && npm run check:static && npm run check:ipc && npm run check:data && npm run check:voice && npm run check:voicepack && npm run check:firstrun && npm run check:shell && npm run check:render",
     "check:fast": "npm run selftest && npm run check:static && npm run check:ipc",
     "check:launch": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-launch.js",
+    "bench": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/bench.js",
     "launch": "electron ."
   },
   "dependencies": {

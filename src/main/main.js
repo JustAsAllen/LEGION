@@ -518,7 +518,7 @@ function registerIpc() {
         rate: o.rate !== undefined ? o.rate : v.rate,
         volume: o.volume !== undefined ? o.volume : v.volume
       });
-      return { ok: true, format: res.format, sampleRate: res.sampleRate, durationMs: res.durationMs, source: res.source || 'sapi', pack: res.pack || null, audioBase64: res.audio ? res.audio.toString('base64') : null };
+      return { ok: true, format: res.format, sampleRate: res.sampleRate, durationMs: res.durationMs, source: res.source || 'sapi', pack: res.pack || null, phrase: res.phrase || null, audioBase64: res.audio ? res.audio.toString('base64') : null };
     } catch (err) {
       setError(err);
       return { ok: false, error: { message: err.message, code: err.code || 'E_TTS' } };

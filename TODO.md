@@ -38,17 +38,24 @@ First run only: `npm install`.
 - [x] **Logo** — three-arc segmented ring, procedurally sampled, verified geometry (empty gap sectors)
 - [x] **Launchers** — `.vbs` and `.bat` boot a titled window; `check:launch` measures
       time to window and proves the render loop is alive and not spinning
+- [x] **Batch 4** — `backgroundThrottling: false`, so the mark animates while unfocused;
+      three flaky shell checks made to poll for settle instead of sampling once
+- [x] **Voice packs** — `voicepack/` with a working example pack, clip lookup ahead of
+      SAPI, a settings surface, and 12 checks
+- [x] **Batch 5** — `npm run bench`; 10-minute soak measured, no leak, 81.7 fps
+- [x] **Batch 6** — `ARCHITECTURE.md`, `CONTRIBUTING.md`, `.env.example`, README sections
+- [ ] **Batch 7 (next)** — security audit, a live AI turn against a real provider, dist build
 
 ---
 
 ## Next
 
 ### 1. Documentation (from the build prompt, §43)
-- [x] `README.md` — what it is, features, requirements, install, running, building, the check suite, themes
+- [x] `README.md` — what it is, features, requirements, install, running, building, the check suite, voice packs, measured performance, themes
 - [x] `assets/logo.svg` — segmented-ring mark, geometry matching `logo-model.js`
-- [ ] `ARCHITECTURE.md` — components, data flow, AI/voice/visual pipelines, state machine, tool system, memory
-- [ ] `.env.example` — every supported env var, no real values
-- [ ] `CONTRIBUTING.md` — the check suite, conventions, how to add a tool / provider / state
+- [x] `ARCHITECTURE.md` — process split, 44 IPC channels, state machine, AI/voice/visual pipelines, tool system, memory, data flow
+- [x] `.env.example` — the two real API keys, no values, states that the app needs none
+- [x] `CONTRIBUTING.md` — the check suite, conventions, how to add a tool / channel / state, how to read the bench
 
 ### 2. AI engine (§17, §6)
 - [x] provider-independent engine, conversation manager
@@ -56,14 +63,17 @@ First run only: `npm install`.
 - [ ] local LLM provider (optional, §39)
 
 ### 3. Security audit (§30, §10)
-- [ ] confirm no secret reaches the renderer (trace `config` through IPC)
-- [ ] tool sandbox review: file write roots, command allowlist
+- [x] secrets are read in main only and never returned over IPC (`secrets.js`; the
+      renderer can ask whether a key exists, never its value)
+- [ ] tool sandbox review: file write roots, command allowlist — read, not yet audited
 - [ ] RLS-style equivalent: what the renderer can reach through `ipcRenderer`
 
 ### 4. Performance (§11, §26)
-- [ ] profile CPU/GPU/RAM over a long session
-- [ ] memory-leak check over a long session
-- [ ] verify quality tiers auto-scale on a low-end machine
+- [x] `npm run bench` — frame-time percentiles, heap trend, DOM size, RSS, quality tier
+- [x] profile over a long session: 10-minute soak, 81.7 fps mean, p50 12.1 ms
+- [x] memory-leak check: heap peak envelope +0.42 MB over 600 s, DOM pinned at 270 nodes
+- [x] frame sampler reads its own rAF timestamps, not the app's fps counter
+- [~] quality tiers auto-scale — verified to respond to load (`ultra → high → medium → low` and back), but not on genuinely low-end hardware, which this machine is not
 
 ### 5. Production build (§44)
 - [ ] `npm run dist` succeeds
@@ -85,17 +95,23 @@ First run only: `npm install`.
 - [x] consulted before SAPI in `tts.synthesize()`; a pack hit works on any platform, not just Windows
 - [x] `voicepack/` with a working example pack (6 real SAPI clips) and `npm run voicepack:sample` to regenerate
 - [x] reloads on manifest change, no restart; `voice:pack` IPC for the settings view
-- [x] `check:voicepack` — 11 checks: hit, miss, fall-through, disabled, traversal, audio sniffing
-- [ ] pick a UI surface: choose a pack, toggle packs, preview a clip
+- [x] settings panel shows the active pack, its phrase count, and any manifest problems
+- [x] "Test voice pack" plays a phrase the pack actually has and reports clip vs SAPI
+- [x] `check:voicepack` — 12 checks: hit, miss, fall-through, disabled, traversal, audio sniffing, provenance
+- [ ] pick/choose between multiple installed packs (one folder is read today)
 - [ ] decide whether packs are per-user or shipped with the app (currently project-root only)
 
 ---
 
 ## Known issues
 
-- Voice packs are read from the project-root `voicepack/` folder only. There is no
-  UI to choose or preview a pack, and a packaged build has to ship the folder beside
-  the app for packs to be found. Per-user packs are the obvious next step.
+- Voice packs are read from the project-root `voicepack/` folder only. One folder,
+  no chooser, and a packaged build has to ship the folder beside the app for packs
+  to be found. Per-user packs are the obvious next step.
+- `npm run bench` disables Chromium's occlusion throttling so the numbers describe
+  the app. A window left fully covered by another window will still drop to roughly
+  1 rAF/second, and the app will drop to the lowest quality tier in response — which
+  is the tier policy behaving correctly, not a fault.
 - The `4` o'clock arc holds ~2000 more samples than the other two at the full
   16000-sample capacity (sampler overflow). The gaps are still empty, so it is
   a density imbalance, not a placement error. Low priority.

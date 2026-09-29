@@ -81,6 +81,7 @@ npm run check:fast  # static + scope self-test + IPC
 | `npm run check:ipc` | Every `ipcMain` handler is registered and reachable |
 | `npm run check:data` | The data layer: config, storage, round trips |
 | `npm run check:voice` | STT/TTS routing, error paths, provider fallback |
+| `npm run check:voicepack` | Voice pack: a listed phrase plays its clip, a miss falls through to SAPI, and a manifest cannot read outside its folder |
 | `npm run check:firstrun` | First-run flow and dismiss handling |
 | `npm run check:shell` | Live UI: geometry, panel behaviour, modals, settings round trips |
 | `npm run check:render` | The live renderer: frame rate, element counts, WebGL errors |
@@ -89,6 +90,66 @@ npm run check:fast  # static + scope self-test + IPC
 `check:static` parses every project file with acorn and reports undeclared reads
 instead of trusting a hand-maintained list of globals. Vendored three.js is
 skipped.
+
+## Voice packs
+
+Drop a `.wav` or `.mp3` in `voicepack/`, named after the phrase, and LEGION plays
+that recording instead of synthesising those exact words:
+
+```json
+// voicepack/manifest.json
+{ "phrase": "On it.", "file": "on-it.mp3" }
+```
+
+Matching is exact once case and punctuation are folded, so `"On it."`, `"on it"`
+and `"  ON IT! "` all hit the same clip. Anything with no clip is still spoken by
+SAPI as before — there is no wildcard, because a catch-all would play one clip
+for text it does not match, and the mark would appear to say something the app
+never said.
+
+A working example pack ships with six real clips. `voicepack/README.md` has the
+format; `npm run voicepack:sample` regenerates them.
+
+## Performance
+
+`npm run bench` boots the real window and measures it — frame-time percentiles,
+JS heap trend, DOM size and the adaptive quality tier:
+
+```bash
+npm run bench          # 30 s soak
+npm run bench 600      # 10 minutes, for a leak claim
+```
+
+Measured over a 10-minute soak on the development machine:
+
+| Metric | Result |
+|---|---|
+| Boot to first frame | 864 ms |
+| Frame time | p50 12.1 ms, p95 24.2 ms, p99 30.3 ms |
+| Frame rate | 81.7 fps mean, 76.8 fps at p5 |
+| JS heap | 8.2 MB → 12.2 MB, peak envelope +0.42 MB over 600 s |
+| DOM nodes | 270, flat for the whole session |
+| Page exceptions | 0 |
+
+The heap is the meaningful leak signal: the collector sawtooths between about
+8 MB and 17 MB and the *peak envelope* — the ceiling, not the last sample —
+stayed flat across ten minutes. Summing RSS across the Electron processes
+instead reports ~820 MB, but that double-counts the large pages those processes
+share, so it overstates real usage.
+
+The sampler reads its own `requestAnimationFrame` timestamps rather than the
+app's fps counter, so a misreported frame rate would still show up.
+
+`bench` refuses to run while a LEGION instance is already alive, since a stray
+process makes every number wrong. It also disables Chromium's occlusion
+throttling for the run: a window sitting behind another window otherwise gets
+rAF at about 1 Hz, which reads as a 20 fps app and makes adaptive quality drop to
+the lowest tier for no reason of its own. That behaviour is the tier policy
+working, not a fault — but it must not contaminate a measurement.
+
+Adaptive quality, observed under that load: `ultra → high → medium → low`, and
+back to `ultra` once frames recovered. The tier you pick is a ceiling, so adaptive
+mode may drop below it under load but never climbs past it.
 
 ## Build a distributable
 
@@ -104,12 +165,21 @@ executable.
 ```
 src/
   main/        main process, window, IPC handlers
+    ai/        provider-independent engine, provider adapters, personality
+    voice/     SAPI TTS, voice packs, Windows STT, wake word
+    tools/     36 tools, registry, sandbox
+    system/    metrics
   renderer/    the UI, the mark, and the Web Worker that samples it
     visuals/   ring geometry, particle field, glyph atlas, stage
     js/        app shell, panels, audio
-scripts/       the check suite
+  preload/     the only renderer/main bridge
+voicepack/     prerecorded clips, manifest.json
+scripts/       the check suite and the benchmark
 assets/        logo
 ```
+
+`ARCHITECTURE.md` covers the process split, the state machine and the data flow.
+`CONTRIBUTING.md` covers conventions, and how to add a channel, a tool or a state.
 
 ## Themes
 

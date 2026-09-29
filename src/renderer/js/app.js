@@ -778,7 +778,17 @@ class Legion {
     this.audio.stopSpeaking();
     if (this.store.state === 'SPEAKING') this.store.setState('IDLE');
     this.#releaseSpeechDevice();
-    return { ok: true, durationMs: play.durationMs };
+    // source/phrase are carried through so a caller can tell a recorded pack clip
+    // from freshly synthesised speech; the settings panel reports which was used.
+    return { ok: true, durationMs: play.durationMs, source: res.source, pack: res.pack, phrase: res.phrase };
+  }
+
+  /**
+   * The voice pack description, for the settings panel. Returns null if the
+   * bridge is unavailable rather than throwing, since the panel only reports it.
+   */
+  async voicePack() {
+    try { return await api.voice.pack(); } catch (_) { return null; }
   }
 
   /**

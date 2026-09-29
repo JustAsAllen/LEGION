@@ -16,6 +16,9 @@ settings.json
 *.secret
 .env
 .env.*
+# The pattern above is correct for real secrets, but it also swallows the
+# documented template. Keep the example, never a real .env.
+!.env.example
 
 # editor and OS noise
 .DS_Store
