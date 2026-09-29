@@ -2,6 +2,40 @@
 
 ## PERSONAL AI COMMAND SYSTEM — MASTER OPENCODE BUILD PROMPT
 
+> ## ⚠️ AMENDMENT 1 — THE FACE BECAME A SEGMENTED RING
+>
+> **The original brief in this document asked for a male digital AI face. That
+> design was built and then removed. Every reference to a face below is
+> superseded.** The original text is left intact as the record of what was
+> asked for, so read this section before the rest.
+>
+> **What is there now.** A procedurally sampled ring made of three arc
+> segments, with gaps at 2, 6 and 10 o'clock. The arcs span 90° each and the
+> gaps 30° each, so the three arcs are equal by construction rather than by
+> eyeballing. It is still a data mark and still GPU-drawn — the requirement
+> that survived was *"thousands of small visual elements, generated
+> procedurally, animated, reacting to state"*, not the anatomy.
+>
+> **Why it changed.** The face read as a lumpy blob at stage scale rather than
+> a face, and its alpha spread never settled, so the field rendered
+> effectively invisible. Anatomy generated from landmarks does not survive
+> being reconstructed from scattered particles.
+>
+> **What did not change.** Everything about *how* it is built. No static image,
+> analytic geometry rather than a bitmap, GPU rendering, and the same state
+> machine: FORMING, IDLE, LISTENING, THINKING, SPEAKING, ALERT, ERROR.
+>
+> | Original brief | Current build |
+> |---|---|
+> | §3 the face, eyes/nose/jaw/mouth | three arcs, gaps at 2/6/10 o'clock |
+> | §4 face generation from landmarks | analytic ring, `LOGO` in `logo-model.js` |
+> | §5 face appearance | band cross-section, rim rounding, bright cut end-caps |
+> | §6 face animation | spread, lift, chase pulse, state-driven accent |
+> | STAGE 4 face state engine | unchanged, still drives the same seven states |
+>
+> Sections 1, 2 and 7 onward are unaffected except where they say "face" in
+> place of "mark".
+
 You are the primary software architect and development agent responsible for building a complete personal AI assistant called **LEGION**.
 
 LEGION is not supposed to look like a normal chatbot.
@@ -10,8 +44,9 @@ It should feel like an advanced AI system that lives on the user's computer.
 
 The goal is to create a polished, functional, futuristic desktop AI assistant with:
 
-* A distinctive **male digital AI face**
-* A face generated from **binary, numbers and data**
+* A distinctive **procedurally sampled data mark** — *originally briefed as a
+  male digital AI face; see Amendment 1, now a segmented arc-ring*
+* A mark generated from **binary, numbers and data**
 * Real-time voice conversation
 * Speech recognition
 * Text-to-speech
@@ -97,7 +132,14 @@ Do not copy copyrighted characters, faces, assets, logos, dialogue, or exact int
 
 ---
 
-# 3. THE LEGION FACE
+# 3. THE LEGION MARK
+
+> **SUPERSEDED BY AMENDMENT 1.** This section specifies a male digital face with
+> eyes, nose, jaw and mouth. That is not what was built — the face was replaced
+> by a three-arc segmented ring. The anatomy below is retained as the original
+> brief. The requirement that still governs the build is the one that follows
+> this section: the mark is made of data, it is generated procedurally rather
+> than drawn as an image, and it reacts to state.
 
 The face is the most important part of the entire application.
 
@@ -151,6 +193,13 @@ The user realizes the face is composed entirely of moving digital information.
 
 # 4. FACE GENERATION
 
+> **SUPERSEDED BY AMENDMENT 1 — landmarks were replaced by an analytic ring.**
+> Steps 1 and 2 below ("facial point/landmark structure") are how the removed
+> face was built and are no longer what ships. Steps 3 onward — assign
+> binary/numerical characters or particles to those points, render on the GPU,
+> animate around target positions, dissolve and reform — are unchanged and
+> still describe the current build.
+
 Do NOT use a static PNG as the main face.
 
 Do NOT simply place an image of a human face behind a binary overlay.
@@ -198,6 +247,11 @@ ERROR
 
 # 5. FACE APPEARANCE
 
+> **SUPERSEDED BY AMENDMENT 1 — there is no face.** The palette guidance below
+> still applies unchanged. What replaces it: a band with a rounded cross-section
+> (`rim`), a depth, and bright end-caps on the six cut ends, lit in the theme
+> accent so a theme change re-lights the mark the same way it re-colours the UI.
+
 The face should primarily use a restrained futuristic palette.
 
 Preferred visual direction:
@@ -218,6 +272,11 @@ The interface should feel premium and cinematic rather than like a gaming overla
 ---
 
 # 6. FACE ANIMATION
+
+> **SUPERSEDED BY AMENDMENT 1 — there is no face to animate.** The intent below
+> ("must feel alive", respond to state, dissolve and reconstruct) carries over
+> unchanged. It is delivered by the ring's spread, lift, chase pulse and
+> state-driven accent, and `stage.js` is the single owner of those commands.
 
 The face must feel alive.
 
@@ -1153,6 +1212,11 @@ Build:
 The application should already look impressive at this stage.
 
 ## STAGE 4 — FACE STATE ENGINE
+
+> **NAME ONLY IS OUTDATED — the state engine is unchanged and is what still
+> ships.** It is called the face state engine in the original plan; it now drives
+> the segmented ring. All seven states (FORMING, IDLE, LISTENING, THINKING,
+> SPEAKING, ALERT, ERROR) are implemented and covered by the check suite.
 
 Implement:
 
