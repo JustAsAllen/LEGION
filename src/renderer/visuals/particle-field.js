@@ -1,16 +1,15 @@
 import * as THREE from '../vendor/three.module.js';
-import { REGION } from './face-model.js';
 
 /**
  * PARTICLE FIELD
  * ==============
- * Every visible element of LEGION's face is one instance of a single quad,
+ * Every visible element of LEGION's mark is one instance of a single quad,
  * drawn in one draw call. The CPU uploads a static point cloud once; all
- * motion, expression, audio response and state colour live in the shaders.
+ * motion, audio response and state colour live in the shaders.
  *
  * Quality changes are a single `instanceCount` write, so switching from HIGH
  * to LOW costs nothing. That works because the cloud is uniformly random:
- * any prefix of it is a fair random subset of the whole face.
+ * any prefix of it is a fair random subset of the whole mark.
  */
 
 const VERT = /* glsl */`
@@ -27,15 +26,13 @@ uniform float uEnergy;
 uniform float uSize;
 uniform float uPixelRatio;
 uniform vec3  uAudio;
-uniform float uMouthOpen;
-uniform float uBrowRaise;
-uniform vec2  uGaze;
+uniform float uSpread;
+uniform float uLift;
 uniform float uScanY;
 uniform float uScanStrength;
 uniform float uDissolve;
 uniform float uReducedMotion;
 uniform float uIntensity;
-uniform float uBlink;
 uniform float uBreathe;
 uniform vec3  uColorBase;
 uniform vec3  uColorFeature;
@@ -47,20 +44,13 @@ varying float vGlyph;
 varying vec3  vColor;
 varying float vAlpha;
 
-const float R_FACE = 0.0;
-const float R_BROW = 1.0;
-const float R_SOCKET = 2.0;
-const float R_NOSE = 3.0;
-const float R_MOUTH = 4.0;
-const float R_CHEEK = 5.0;
-const float R_JAW = 6.0;
-const float R_EAR = 7.0;
-const float R_HAIR = 8.0;
-const float R_LIPU = 12.0;
-const float R_LIPL = 13.0;
-const float R_EYE  = 14.0;
-const float R_IRIS = 16.0;
-const float R_PUPIL = 17.0;
+const float R_BAND     = 0.0;
+const float R_CAP      = 1.0;
+const float R_RIM_OUT  = 2.0;
+const float R_RIM_IN   = 3.0;
+
+const float SEG_SPAN = 2.0943951;   // 120 degrees
+const float SEG_CENTRE_0 = 1.5707963; // 12 o'clock, straight up
 
 float hash11(float p) {
   p = fract(p * 0.1031);
@@ -91,61 +81,42 @@ void main() {
   float speed = aAttr.z;
   float bright= aAttr.w;
 
-  bool isPupil  = aRegion > 16.5;
-  bool isIris   = aRegion > 15.5 && aRegion < 16.5;
-  bool isEye    = aRegion > 13.5 && aRegion < 15.5;
-  bool isEyeAll = aRegion > 13.5;
-  bool isMouth  = abs(aRegion - R_MOUTH) < 0.5;
-  bool isLip    = (aRegion > 11.5 && aRegion < 12.5) || (aRegion > 12.5 && aRegion < 13.5);
-  bool isBrow   = abs(aRegion - R_BROW) < 0.5;
-  bool isHair   = abs(aRegion - R_HAIR) < 0.5;
-  bool isJaw    = abs(aRegion - R_JAW) < 0.5;
-  bool isNose   = abs(aRegion - R_NOSE) < 0.5;
-  bool isCheek  = abs(aRegion - R_CHEEK) < 0.5;
-  bool isSocket = abs(aRegion - R_SOCKET) < 0.5;
-  bool isEar    = abs(aRegion - R_EAR) < 0.5;
-  bool isShoulder = aRegion > 9.5 && aRegion < 10.5;
+  bool isCap    = abs(aRegion - R_CAP) < 0.5;
+  bool isRimOut = abs(aRegion - R_RIM_OUT) < 0.5;
+  bool isRimIn  = abs(aRegion - R_RIM_IN) < 0.5;
 
   float motion = uEnergy * (1.0 - uReducedMotion * 0.78);
 
-  /* ---- home position with expression applied ----------------- */
+  /* ---- home position ------------------------------------------- */
   vec3 home = aTarget;
 
-  // Breathing: a slow, shallow vertical swell of the whole head.
-  home.y *= 1.0 + uBreathe * 0.006;
-  home.x *= 1.0 + uBreathe * 0.004;
+  // Which arc is this element on? Taken from its own angle rather than from a
+  // region id, so the three arcs can be driven apart independently without the
+  // sampler spending one of its four labels on saying which arc it is.
+  float ang  = atan(aTarget.y, aTarget.x);
+  float cell = floor((ang - SEG_CENTRE_0) / SEG_SPAN + 0.5);
+  float segCentre = SEG_CENTRE_0 + cell * SEG_SPAN;
+  float relN = clamp((ang - segCentre) / (SEG_SPAN * 0.5), -1.0, 1.0);
 
-  // Blink: the upper lid sweeps down over the eye.
-  if (isEyeAll) {
-    home.y -= uBlink * 0.34;
-    home.y += uBlink * 0.10 * step(0.0, home.y - 1.95);
-  }
+  // Breathing: a slow radial swell. A ring breathes this way, not up and down.
+  home.xy *= 1.0 + uBreathe * 0.010;
 
-  // Mouth opening, and the jaw that carries it.
-  // Region tests are booleans, and GLSL has no implicit bool-to-float
-  // conversion, so the masks used as multipliers are built explicitly.
-  float lipW = (isMouth || isLip) ? 1.0 : 0.0;
-  home.y -= uMouthOpen * lipW * 0.92;
-  home.z += uMouthOpen * lipW * 0.34;
+  // Speaking: the slices drift apart at their open ends. Scaling the angular
+  // offset away from each arc's own centre widens all three gaps at once while
+  // leaving the arc centres where they are, which is what a segmented mark
+  // does when it talks.
+  home.xy *= 1.0 + uSpread * 0.22 * abs(relN);
+  float flare = uSpread * 0.09 * relN;
+  float cf = cos(flare), sf = sin(flare);
+  home.xy = vec2(home.x * cf - home.y * sf, home.x * sf + home.y * cf);
 
-  float belowMouth = smoothstep(-3.8, -6.4, aTarget.y);
-  home.y -= uMouthOpen * belowMouth * 0.40;
-  home.z += uMouthOpen * belowMouth * 0.15;
-
-  // Brow raise / furrow.
-  float browW = isBrow ? 1.0 : 0.0;
-  home.y += uBrowRaise * browW * 0.34;
-  home.z -= abs(uBrowRaise) * browW * 0.10;
-
-  // Gaze. Eyes only.
-  if (isEyeAll) {
-    home.x += uGaze.x * 0.17;
-    home.y += uGaze.y * 0.14;
-  }
+  // "Brow raise" becomes the cut faces lifting out along their own normal, so
+  // the mark gains weight while LEGION is thinking.
+  home += aNormal * uLift * (isCap ? 1.0 : 0.0) * 0.9;
 
   /* ---- formation: staggered convergence ---------------------- */
   vec3 h3 = hash31(seed * 311.7 + 1.7);
-  vec3 scatter = home + (h3 - 0.5) * vec3(30.0, 34.0, 22.0);
+  vec3 scatter = home + (h3 - 0.5) * vec3(30.0, 30.0, 9.0);
 
   float wave = 0.5 + 0.5 * sin(seed * 6.2831 + uTime * 0.35);
   float local = clamp(uForm * 1.45 - wave * 0.42, 0.0, 1.0);
@@ -157,14 +128,14 @@ void main() {
   vec3 d = drift(aTarget * 0.5, uTime * speed, seed);
   pos += d * (0.075 + 0.16 * motion) * (1.0 - local * 0.30);
 
-  // A slow lateral data sweep travelling up the face.
-  float sweep = sin(aTarget.y * 0.42 - uTime * 0.9 + seed * 2.0);
+  // A data sweep travelling around the ring rather than up a face.
+  float sweep = sin(length(aTarget.xy) * 0.62 - uTime * 0.9 + seed * 2.0);
   pos += aNormal * sweep * 0.055 * motion * (0.4 + local * 0.8);
 
   // Real audio: low band swells the mass, high band shimmers the surface.
   float low  = uAudio.x;
   float high = uAudio.z;
-  pos += aNormal * (low * 0.26 + high * 0.13) * (isEyeAll ? 0.5 : 1.0);
+  pos += aNormal * (low * 0.26 + high * 0.13) * (isCap ? 0.6 : 1.0);
 
   // Scan pass.
   float band = exp(-pow((aTarget.y - uScanY) * 1.45, 2.0));
@@ -179,9 +150,9 @@ void main() {
   float depth = max(-mv.z, 0.001);
   float persp = 1.0 / max(depth * 0.055, 0.30);
 
-  float audioScale = 1.0 + (low + high) * 0.45 + uMouthOpen * 0.12;
+  float audioScale = 1.0 + (low + high) * 0.45 + uSpread * 0.10;
   float sz = uSize * sizeM * audioScale * uPixelRatio * persp;
-  sz *= isEyeAll ? 0.80 : 1.0;
+  sz *= (isRimOut || isRimIn) ? 0.88 : 1.0;
   sz *= mix(1.9, 1.0, local);
 
   mv.xy += position.xy * sz;
@@ -190,10 +161,10 @@ void main() {
   /* ---- glyph, colour, alpha ---------------------------------- */
   float churn = uTime * (0.5 + 1.7 * motion);
   float g;
-  if (isEyeAll) {
-    g = -1.0;
-  } else if (isHair) {
-    g = floor(fract(seed * 53.0 + churn * 0.07) * 48.0);
+  if (isCap) {
+    // The cut ends churn slowly through a narrow set of glyphs, so they read as
+    // one continuous accent element instead of as more of the same texture.
+    g = floor(fract(seed * 53.0 + churn * 0.18) * 24.0);
   } else if (seed > 0.80) {
     g = floor(fract(seed * 53.0 + churn * 0.13) * 64.0);
   } else {
@@ -202,33 +173,34 @@ void main() {
   vGlyph = g;
 
   vec3 nView = normalize(normalMatrix * aNormal);
-  float facing = smoothstep(-0.45, 0.15, -nView.z);
+  // A surface facing the camera has a normal pointing back along +Z in view
+  // space. The sign here used to be negated, which kept the *back* of the head
+  // and threw away the entire front of it; every element that faced the viewer
+  // was discarded before it reached the fragment shader.
+  float facing = smoothstep(-0.35, 0.25, nView.z);
 
   vec3 col = uColorBase;
   float glow = 0.0;
 
-  if (isEyeAll)       { col = isIris ? uColorAccent : mix(uColorFeature, vec3(1.0), 0.55); glow = 0.9; }
-  else if (isBrow)    { col = mix(uColorBase, uColorFeature, 0.65); glow = 0.25; }
-  else if (isNose)    { col = mix(uColorBase, uColorFeature, 0.45); glow = 0.20; }
-  else if (isMouth || isLip) { col = uColorFeature; glow = 0.35; }
-  else if (isSocket)  { col = uColorBase * 0.72; }
-  else if (isCheek)   { col = mix(uColorBase, uColorFeature, 0.20); }
-  else if (isHair)    { col = uColorBase * 0.42; glow = 0.0; }
-  else if (isEar)     { col = uColorBase * 0.62; }
-  else if (isShoulder){ col = uColorBase * 0.50; }
-  else if (isJaw)     { col = mix(uColorBase, uColorFeature, 0.14); }
+  if (isCap)         { col = mix(uColorFeature, uColorAccent, 0.72); glow = 0.85; }
+  else if (isRimOut) { col = mix(uColorBase, uColorFeature, 0.55); glow = 0.20; }
+  else if (isRimIn)  { col = uColorBase * 0.80;               glow = 0.10; }
+  else               { col = mix(uColorBase, uColorFeature, 0.30); }
+
+  // A pulse running around the ring, so the mark is alive even while the state
+  // machine is idle. This is where the theme colour is read on every element,
+  // which is what makes a theme change visible in the logo and not only in the
+  // window chrome.
+  float chase = 0.5 + 0.5 * sin(ang * 1.5 - uTime * 1.6);
+  col += uColorAccent * pow(chase, 6.0) * (0.10 + 0.34 * motion);
 
   col = mix(col, uColorAlert, glow * 0.25);
   col += uColorAccent * band * uScanStrength * 0.6;
   col *= 0.85 + 0.45 * (low * 0.7 + high * 0.5);
 
   float alpha = bright * facing * uIntensity;
-  if (isPupil)    alpha = 0.0;
-  if (isHair)     alpha *= 0.42;
-  if (isShoulder) alpha *= 0.55;
-  if (isEar)      alpha *= 0.72;
-  if (isEyeAll)   alpha *= mix(0.0, 1.0, step(0.5, 1.0 - uBlink * 0.85));
-  if (isIris)     alpha *= 1.0;
+  if (isRimOut) alpha *= 0.72;
+  if (isRimIn)  alpha *= 0.86;
 
   vColor = col;
   vAlpha = alpha;
@@ -251,22 +223,12 @@ varying float vAlpha;
 void main() {
   if (vAlpha < 0.02) discard;
 
-  // Eye elements are solid forms, not characters.
-  if (vGlyph < -0.5) {
-    vec2 p = vUv - 0.5;
-    float d = length(p);
-    if (d > 0.5) discard;
-    float e = smoothstep(0.5, 0.30, d);
-    gl_FragColor = vec4(vColor, e * vAlpha);
-    return;
-  }
-
   float cellId = floor(vGlyph);
   vec2 cell = vec2(mod(cellId, uGrid), floor(cellId / uGrid));
   vec2 local = clamp(vUv, 0.055, 0.945);
   vec2 auv = (cell + local) / uGrid;
 
-  float a = texture2D(uAtlas, auv, -0.55).a;
+  float a = texture2D(uAtlas, auv).a;
   if (a < 0.10) discard;
 
   vec3 c = vColor * (1.0 + uGlow * 0.55);
@@ -311,15 +273,13 @@ export class ParticleField {
       uSize:         { value: 0.30 },
       uPixelRatio:   { value: 1 },
       uAudio:        { value: new THREE.Vector3(0, 0, 0) },
-      uMouthOpen:    { value: 0 },
-      uBrowRaise:    { value: 0 },
-      uGaze:         { value: new THREE.Vector2(0, 0) },
+      uSpread:       { value: 0 },
+      uLift:         { value: 0 },
       uScanY:        { value: 40 },
       uScanStrength: { value: 0 },
       uDissolve:     { value: 0 },
       uReducedMotion:{ value: 0 },
       uIntensity:    { value: 1 },
-      uBlink:        { value: 0 },
       uBreathe:      { value: 0 },
       uColorBase:    { value: new THREE.Color(0.62, 0.74, 0.92) },
       uColorFeature: { value: new THREE.Color(0.86, 0.92, 1.0) },
@@ -375,5 +335,3 @@ export class ParticleField {
     this.material.dispose();
   }
 }
-
-export { REGION };

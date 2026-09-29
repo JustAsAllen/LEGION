@@ -7,8 +7,8 @@
  * holds a secret.
  */
 
-import { FaceStage, QUALITY_TIERS } from '../visuals/stage.js';
-import { FaceLoader } from '../visuals/face-loader.js';
+import { LogoStage, QUALITY_TIERS } from '../visuals/stage.js';
+import { LogoLoader } from '../visuals/logo-loader.js';
 import { AudioEngine } from './audio.js';
 import { StateStore } from './state.js';
 import { Waveform } from './waveform.js';
@@ -34,7 +34,7 @@ class Legion {
     this.store = new StateStore();
     this.audio = new AudioEngine();
     this.wave = new Waveform(document.getElementById('waveform'), this.audio);
-    this.face = new FaceLoader();
+    this.mark = new LogoLoader();
 
     this.info = null;
     this.config = null;
@@ -123,7 +123,7 @@ class Legion {
       this.bootProgress(0.16);
 
       this.log('starting render surface', 'dim');
-      this.stage = new FaceStage(document.getElementById('stage'), {
+      this.stage = new LogoStage(document.getElementById('stage'), {
         quality: this.config.visual?.quality || 'high',
         particleScale: this.config.visual?.particleScale ?? 1,
         themeIntensity: this.config.visual?.themeIntensity ?? 1,
@@ -133,7 +133,7 @@ class Legion {
         scanlines: this.config.visual?.showScanlines !== false
       });
       // The theme was applied above while this.stage was still undefined, so
-      // the face needs the accent, glow and scanline strength handed to it
+      // the mark needs the accent, glow and scanline strength handed to it
       // again now that it exists. Without this the saved theme only took effect
       // after the user changed it in Settings.
       this.applyTheme(this.theme, true);
@@ -148,11 +148,11 @@ class Legion {
       this.log(caps.sapi ? 'local dictation engine available' : `dictation unavailable · ${caps.note}`, caps.sapi ? 'ok' : 'err');
       this.bootProgress(0.34);
 
-      this.log('compiling procedural face', 'dim');
-      const cloud = await this.face.generate(CLOUD_TARGET, (p) => this.bootProgress(0.34 + p * 0.5));
+      this.log('compiling procedural mark', 'dim');
+      const cloud = await this.mark.generate(CLOUD_TARGET, (p) => this.bootProgress(0.34 + p * 0.5));
       this.cloud = cloud;
       this.stage.setCloud(cloud);
-      this.log(`face compiled · ${cloud.count.toLocaleString()} data elements`, 'ok');
+      this.log(`mark compiled · ${cloud.count.toLocaleString()} data elements`, 'ok');
       this.bootProgress(0.9);
 
       // The returning-user boot branch never re-applied the visual policy, so
@@ -231,7 +231,7 @@ class Legion {
    * Hand over from the first-run wizard to the main shell.
    *
    * The settings saved in step 5 are applied to the live stage before the boot
-   * animation starts, so the face appears at the quality that was chosen
+   * animation starts, so the mark appears at the quality that was chosen
    * rather than the tier the stage was constructed with. The cloud is already
    * sampled at full size, so changing the tier is a single instanceCount write.
    *
@@ -255,7 +255,7 @@ class Legion {
     }
 
     // The settings saved in step 5 are applied to the live stage before the
-    // boot animation starts, so the face appears at the quality that was
+    // boot animation starts, so the mark appears at the quality that was
     // chosen rather than the tier the stage was constructed with. The cloud is
     // already sampled at full size, so a new tier is one instanceCount write.
     const v = this.config?.visual || visual;
@@ -269,7 +269,7 @@ class Legion {
     document.getElementById('firstrun').hidden = true;
     this.#hideBoot();
 
-    this.store.setState('BOOTING', 'Bringing the face online');
+    this.store.setState('BOOTING', 'Bringing the mark online');
     this.stage?.runBootSequence();
     this.store.setState('IDLE');
 
@@ -380,7 +380,7 @@ class Legion {
 
     if (next === 'IDLE' || next === 'OFFLINE') this.store.clearError();
 
-    // When the main process reports the turn is over, the face relaxes.
+    // When the main process reports the turn is over, the mark relaxes.
     if (next === 'IDLE' && (prev === 'PROCESSING' || prev === 'SPEAKING')) {
       this.store.setCaption('', false);
       this.store.setStreaming('');
@@ -744,7 +744,7 @@ class Legion {
   }
 
   /**
-   * Synthesise, play, and analyse the real output. The face keeps reacting
+   * Synthesise, play, and analyse the real output. The mark keeps reacting
    * because the TTS signal drives the same analyser the microphone uses.
    */
   async speak(text, opts) {
@@ -841,11 +841,11 @@ class Legion {
   }
 
   /**
-   * Slide the face out from under an open panel.
+   * Slide the mark out from under an open panel.
    *
    * The panel is docked to one edge and sits above the stage in z, so the
    * camera is panned by half the panel width towards the free side. That
-   * re-centres the face in the visible area instead of leaving it half
+   * re-centres the mark in the visible area instead of leaving it half
    * covered, and the stage's own lookTarget term turns the gaze after it.
    */
   #applyPanelShift() {
@@ -1038,17 +1038,17 @@ class Legion {
     } catch (err) { return { ok: false, error: err.message }; }
   }
 
-  async rebuildFace(quality) {
+  async rebuildMark(quality) {
     if (!QUALITY_TIERS[quality]) return;
-    this.toast('info', 'Regenerating face', quality);
+    this.toast('info', 'Regenerating mark', quality);
     try {
-      const cloud = await this.face.generate(CLOUD_TARGET);
+      const cloud = await this.mark.generate(CLOUD_TARGET);
       this.cloud = cloud;
       this.stage.setQuality(quality);
       this.stage.setCloud(cloud);
-      this.toast('ok', 'Face rebuilt', `${cloud.count.toLocaleString()} elements`);
+      this.toast('ok', 'Mark rebuilt', `${cloud.count.toLocaleString()} elements`);
     } catch (err) {
-      this.toast('error', 'Could not rebuild the face', err.message);
+      this.toast('error', 'Could not rebuild the mark', err.message);
     }
   }
 

@@ -3,7 +3,7 @@ import * as THREE from '../vendor/three.module.js';
 /**
  * GLYPH ATLAS
  * ===========
- * The face is drawn with characters, not dots. This builds a texture atlas of
+ * The mark is drawn with characters, not dots. This builds a texture atlas of
  * binary digits, decimal digits, hex letters and a few mathematical marks.
  *
  * Cell 0 and cell 1 are '0' and '1': the shader routes ~78% of points to those
@@ -51,8 +51,12 @@ export function buildGlyphAtlas(renderer) {
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.NoColorSpace;
-  texture.generateMipmaps = true;
-  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  // No mipmaps: each particle is a small billboard whose quad samples one atlas
+  // cell, so the implicit mip LOD would land at a nearly empty coarse level and
+  // wash the glyph strokes out to ~zero alpha. A crisp single level keeps the
+  // strokes full-strength at any screen size.
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
   texture.magFilter = THREE.LinearFilter;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;

@@ -7,7 +7,7 @@
  *   TTS WAV    -> AudioBufferSource -> ttsAnalyser -> destination
  *
  * Both analysers report the same five values (rms, low, mid, high, energy) so
- * the face, the waveform and the state machine all react to genuinely measured
+ * the mark, the waveform and the state machine all react to genuinely measured
  * audio. Nothing here is a synthetic fallback.
  */
 

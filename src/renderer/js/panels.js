@@ -404,14 +404,14 @@ export function settingsPanel(host, app) {
         </div>
       </div>
       <label class="field">
-        <span>Face quality</span>
+        <span>Mark quality</span>
         <select id="set-quality">
-          <option value="low">Low - about 2,000 elements</option>
-          <option value="medium">Medium - about 4,000</option>
-          <option value="high">High - about 7,000</option>
-          <option value="ultra">Ultra - about 11,000</option>
+          <option value="low">Low - about 2,200 elements</option>
+          <option value="medium">Medium - about 4,600</option>
+          <option value="high">High - about 8,200</option>
+          <option value="ultra">Ultra - about 10,000</option>
         </select>
-        <span class="hint">Quality regenerates the face once. Adaptive mode can lower it automatically if the frame rate drops.</span>
+        <span class="hint">Quality regenerates the mark once. Adaptive mode can lower it automatically if the frame rate drops.</span>
       </label>
       <div class="field">
         <span>Panel position</span>
@@ -425,7 +425,7 @@ export function settingsPanel(host, app) {
         <span class="sw"></span>
         <span class="t-body">
           <span class="t-label">Adaptive quality</span>
-          <span class="t-hint">Lower the face quality automatically when the frame rate falls below target.</span>
+          <span class="t-hint">Lower the mark quality automatically when the frame rate falls below target.</span>
         </span>
       </label>
       <label class="toggle">
@@ -433,7 +433,7 @@ export function settingsPanel(host, app) {
         <span class="sw"></span>
         <span class="t-body">
           <span class="t-label">Reduced motion</span>
-          <span class="t-hint">Calm particle drift, scanning and blinking. The face still responds to your voice.</span>
+          <span class="t-hint">Calm particle drift and scanning. The mark still responds to your voice.</span>
         </span>
       </label>
       <label class="toggle">
@@ -441,7 +441,7 @@ export function settingsPanel(host, app) {
         <span class="sw"></span>
         <span class="t-body">
           <span class="t-label">Show audio waveform</span>
-          <span class="t-hint">Draws the measured spectrum under the face. Turn it off for a quieter interface; the face still reacts to your voice.</span>
+          <span class="t-hint">Draws the measured spectrum under the mark. Turn it off for a quieter interface; the mark still reacts to your voice.</span>
         </span>
       </label>
     </div>
@@ -750,7 +750,7 @@ export function settingsPanel(host, app) {
     const q = e.target.value;
     const r = await save({ visual: { quality: q } });
     if (!r.ok) { app.toast('error', 'Could not save quality', r.error); return; }
-    await app.rebuildFace(q);
+    await app.rebuildMark(q);
   });
   $('#set-adaptive').addEventListener('change', (e) => save({ visual: { adaptiveQuality: e.target.checked } }));
   $('#set-reduced').addEventListener('change', (e) => save({ visual: { reducedMotion: e.target.checked } }));

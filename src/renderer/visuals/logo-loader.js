@@ -1,5 +1,5 @@
 /**
- * Face generation coordinator.
+ * Mark generation coordinator.
  *
  * Spawns the sampler worker, reports progress, and hands the cloud to the
  * stage. The cloud is generated once at the largest size we might need; lower
@@ -8,7 +8,7 @@
 
 const MAX_CLOUD = 16000;
 
-export class FaceLoader {
+export class LogoLoader {
   constructor() {
     this.worker = null;
     this.pending = null;
@@ -25,7 +25,7 @@ export class FaceLoader {
       try {
         worker = new Worker(new URL('./sampler.worker.js', import.meta.url), { type: 'module' });
       } catch (err) {
-        reject(new Error('Could not start the face sampler: ' + err.message));
+        reject(new Error('Could not start the mark sampler: ' + err.message));
         return;
       }
       this.worker = worker;
@@ -37,6 +37,10 @@ export class FaceLoader {
         const d = ev.data || {};
         if (d.type === 'progress') {
           if (onProgress) onProgress(d.value);
+        } else if (d.type === 'error') {
+          this.pending = null;
+          worker.terminate();
+          reject(new Error(d.message || 'the mark sampler failed'));
         } else if (d.type === 'done') {
           this.pending = null;
           worker.terminate();
@@ -47,7 +51,7 @@ export class FaceLoader {
         if (this.pending !== token) return;
         this.pending = null;
         worker.terminate();
-        reject(new Error('Face sampler failed: ' + (e.message || 'unknown error')));
+        reject(new Error('Mark sampler failed: ' + (e.message || 'unknown error')));
       };
 
       const target = Math.max(1200, Math.min(MAX_CLOUD, count | 0 || 10000));

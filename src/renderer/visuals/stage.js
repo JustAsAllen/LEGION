@@ -12,10 +12,10 @@ import { ParticleField } from './particle-field.js';
  */
 
 const QUALITY_TIERS = {
-  low:    { instances: 2000, size: 0.30, energyScale: 0.75 },
-  medium: { instances: 4000, size: 0.29, energyScale: 0.88 },
-  high:   { instances: 7000, size: 0.28, energyScale: 1.0 },
-  ultra:  { instances: 11000, size: 0.27, energyScale: 1.0 }
+  low:    { instances: 2200, size: 0.34, energyScale: 0.75 },
+  medium: { instances: 4600, size: 0.32, energyScale: 0.88 },
+  high:   { instances: 8200, size: 0.31, energyScale: 1.0 },
+  ultra:  { instances: 10000, size: 0.30, energyScale: 1.0 }
 };
 const TIER_ORDER = ['low', 'medium', 'high', 'ultra'];
 
@@ -33,14 +33,14 @@ const PALETTE = {
  * recoloured into a pale blue or mint theme would stop reading as a warning.
  */
 const STATE_TARGETS = {
-  OFFLINE:    { energy: 0.10, form: 0.00, intensity: 0.10, size: 0.26, scan: 0.00, dissolve: 0.00, accent: PALETTE.base, alertMix: 0, themeAccent: true },
-  BOOTING:    { energy: 1.00, form: 0.00, intensity: 0.55, size: 0.34, scan: 0.30, dissolve: 0.10, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
-  IDLE:       { energy: 0.30, form: 1.00, intensity: 1.00, size: 0.32, scan: 0.00, dissolve: 0.00, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
-  LISTENING:  { energy: 0.60, form: 1.00, intensity: 1.30, size: 0.32, scan: 0.12, dissolve: 0.00, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
-  PROCESSING: { energy: 0.95, form: 1.00, intensity: 1.15, size: 0.33, scan: 0.42, dissolve: 0.13, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
-  SPEAKING:   { energy: 0.52, form: 1.00, intensity: 1.20, size: 0.32, scan: 0.00, dissolve: 0.00, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
-  ALERT:      { energy: 0.72, form: 1.00, intensity: 1.22, size: 0.33, scan: 0.16, dissolve: 0.04, accent: PALETTE.amber, alertMix: 0.55, themeAccent: false },
-  ERROR:      { energy: 0.38, form: 0.92, intensity: 0.90, size: 0.33, scan: 0.10, dissolve: 0.28, accent: PALETTE.alert, alertMix: 0.85, themeAccent: false }
+  OFFLINE:    { energy: 0.10, form: 0.00, intensity: 0.10, size: 0.26, scan: 0.00, dissolve: 0.00, lift: 0.0, accent: PALETTE.base, alertMix: 0, themeAccent: true },
+  BOOTING:    { energy: 1.00, form: 0.00, intensity: 0.55, size: 0.34, scan: 0.30, dissolve: 0.10, lift: 0.30, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
+  IDLE:       { energy: 0.30, form: 1.00, intensity: 1.00, size: 0.32, scan: 0.00, dissolve: 0.00, lift: 0.0, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
+  LISTENING:  { energy: 0.60, form: 1.00, intensity: 1.30, size: 0.32, scan: 0.12, dissolve: 0.00, lift: 0.15, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
+  PROCESSING: { energy: 0.95, form: 1.00, intensity: 1.15, size: 0.33, scan: 0.42, dissolve: 0.13, lift: 0.85, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
+  SPEAKING:   { energy: 0.52, form: 1.00, intensity: 1.20, size: 0.32, scan: 0.00, dissolve: 0.00, lift: 0.20, accent: PALETTE.accent, alertMix: 0, themeAccent: true },
+  ALERT:      { energy: 0.72, form: 1.00, intensity: 1.22, size: 0.33, scan: 0.16, dissolve: 0.04, lift: 0.55, accent: PALETTE.amber, alertMix: 0.55, themeAccent: false },
+  ERROR:      { energy: 0.38, form: 0.92, intensity: 0.90, size: 0.33, scan: 0.10, dissolve: 0.28, lift: 0.40, accent: PALETTE.alert, alertMix: 0.85, themeAccent: false }
 };
 
 function damp(current, target, lambda, dt) {
@@ -53,7 +53,7 @@ function dampColor(cur, target, lambda, dt) {
   cur.b += (target.b - cur.b) * t;
 }
 
-export class FaceStage {
+export class LogoStage {
   constructor(container, options) {
     this.container = container;
     this.opts = Object.assign({ quality: 'high', particleScale: 1, reducedMotion: false, themeIntensity: 1, bloom: true }, options || {});
@@ -72,8 +72,8 @@ export class FaceStage {
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(30, 1, 0.1, 400);
-    this.camera.position.set(0, 0.4, 44);
-    this.lookTarget = new THREE.Vector3(0, 0.4, 0);
+    this.camera.position.set(0, 0, 44);
+    this.lookTarget = new THREE.Vector3(0, 0, 0);
 
     this.atlas = buildGlyphAtlas(this.renderer);
     // Always size the buffers for the largest tier. A fixed capacity means a
@@ -99,14 +99,10 @@ export class FaceStage {
     this.scanlineAlpha = 0.5;
 
     this.audio = { low: 0, mid: 0, high: 0, mouth: 0, energy: 0 };
-    this.mouthOpen = 0;
-    this.browRaise = 0;
-    this.blink = 0;
-    this.nextBlink = 2 + Math.random() * 4;
-    this.blinkPhase = 0;
-    this.gaze = new THREE.Vector2(0, 0);
-    this.gazeTarget = new THREE.Vector2(0, 0);
-    this.nextSaccade = 1.5 + Math.random() * 3;
+    this.spread = 0;
+    this.lift = 0;
+    this.spreadCommand = 0;
+    this.liftCommand = 0;
 
     this.pointer = new THREE.Vector2(0, 0);
     this.pointerSmooth = new THREE.Vector2(0, 0);
@@ -168,11 +164,12 @@ export class FaceStage {
   _fit() {
     const aspect = this.camera.aspect || 1;
     const fov = this.camera.fov * Math.PI / 180;
-    // Frame the head: ~24 units of vertical space, and never less than 21 wide.
-    const needH = Math.max(24.5, 21.5 / Math.max(aspect, 0.35));
+    // Frame the ring: ~25 units tall and panoramic, so give the horizontal
+    // budget a wider multiplier than the vertical one.
+    const needH = Math.max(25, 32 / Math.max(aspect, 0.35));
     const dist = needH / (2 * Math.tan(fov / 2));
     this.baseDistance = dist;
-    this.lookTarget.set(0, 0.4, 0);
+    this.lookTarget.set(0, 0, 0);
   }
 
   setState(next) {
@@ -191,7 +188,7 @@ export class FaceStage {
     this.accentTarget = this.target.themeAccent ? this.themeAccent : this.target.accent;
   }
 
-  /** Boot: converge the cloud into the face over a few seconds. */
+  /** Boot: converge the cloud into the mark over a few seconds. */
   runBootSequence(durationMs) {
     this.bootStart = this.elapsed;
     this.bootDuration = (durationMs || 3400) / 1000;
@@ -299,8 +296,8 @@ export class FaceStage {
     if (mode) this.audio.mode = mode;
   }
 
-  setSpeakingLevel(v) { this.audio.mouth = Math.max(0, Math.min(1, v || 0)); }
-  setBrowRaise(v) { this.browRaise = v || 0; }
+  setSpeakingLevel(v) { this.spreadCommand = Math.max(0, Math.min(1, v || 0)); }
+  setBrowRaise(v) { this.liftCommand = Math.max(0, Math.min(1, v || 0)); }
   setReducedIdle(v) { this.live.energy = v === undefined ? this.live.energy : v; }
 
   /* ------------------------------------------------------------- */
@@ -399,36 +396,17 @@ export class FaceStage {
     dampColor(this.accentLive, this.accentTarget, lam, dt);
 
     /* ---- expression ------------------------------------------- */
-    // Blink.
-    if (!this.reducedMotion) {
-      this.nextBlink -= dt;
-      if (this.nextBlink <= 0 && this.blinkPhase === 0) { this.blinkPhase = 0.001; }
-      if (this.blinkPhase > 0) {
-        this.blinkPhase += dt / 0.16;
-        this.blink = Math.sin(Math.min(1, this.blinkPhase) * Math.PI);
-        if (this.blinkPhase >= 1) { this.blinkPhase = 0; this.blink = 0; this.nextBlink = 2.4 + Math.random() * 4.5; }
-      }
-    } else {
-      this.blink = 0;
-    }
-
-    // Saccades.
-    if (!this.reducedMotion) {
-      this.nextSaccade -= dt;
-      if (this.nextSaccade <= 0) {
-        this.gazeTarget.set((Math.random() - 0.5) * 0.55, (Math.random() - 0.5) * 0.35);
-        this.nextSaccade = 1.4 + Math.random() * 3.2;
-      }
-    }
-    this.gaze.x = damp(this.gaze.x, this.gazeTarget.x, 9, dt);
-    this.gaze.y = damp(this.gaze.y, this.gazeTarget.y, 9, dt);
-
-    // Mouth follows measured speech amplitude, heavily smoothed so it never
-    // snaps open. Formants shape which band drives it.
+    // Speaking: the segmented gaps widen with real measured speech. The same
+    // formant mix that used to open a mouth drives the particles apart, so the
+    // mark talks with what is actually in the signal rather than with a timer.
     const formant = this.audio.low * 0.55 + this.audio.mid * 0.9 + this.audio.high * 0.35;
-    const mouthTarget = Math.min(1, this.audio.mouth * 0.7 + formant * 0.8) * (0.45 + 0.55 * this.audio.mouth);
-    this.mouthOpen = damp(this.mouthOpen, mouthTarget, 16, dt);
-    this.mouthOpen = Math.min(this.mouthOpen, 1);
+    const spreadTarget = Math.min(1, this.spreadCommand * 0.8 + formant * 1.4);
+    this.spread = damp(this.spread, spreadTarget, 14, dt);
+
+    // Thinking: the cut faces lift out of the band. PROCESSING raises them;
+    // an explicit setBrowRaise is honoured as an override.
+    const liftTarget = Math.max(this.liftCommand, T.lift || 0);
+    this.lift = damp(this.lift, liftTarget, 4, dt);
 
     const breathe = Math.sin(this.elapsed * 0.62) * 0.5 + Math.sin(this.elapsed * 0.31 + 1.2) * 0.5;
 
@@ -441,12 +419,10 @@ export class FaceStage {
     u.uIntensity.value = this.live.intensity * this.themeIntensity;
     u.uDissolve.value = this.live.dissolve;
     u.uBreathe.value = breathe;
-    u.uMouthOpen.value = this.mouthOpen;
-    u.uBrowRaise.value = this.browRaise;
-    u.uGaze.value.copy(this.gaze);
-    u.uBlink.value = this.blink;
+    u.uSpread.value = Number.isFinite(this.spread) ? this.spread : 0;
+    u.uLift.value = Number.isFinite(this.lift) ? this.lift : 0;
     u.uScanStrength.value = this.live.scan;
-    u.uScanY.value = ((this.elapsed * 9.0) % 34) - 15;
+    u.uScanY.value = ((this.elapsed * 9.0) % 24) - 12;
     u.uGlow.value = (this.opts.bloom ? 1 : 0.35) * this.themeGlow;
     u.uAudio.value.set(this.audio.low, this.audio.mid, this.audio.high);
     u.uColorAccent.value.copy(this.accentLive);
@@ -461,9 +437,9 @@ export class FaceStage {
     const dist = this.baseDistance || 44;
     const par = this.reducedMotion ? 0 : 1;
     this.camera.position.x = this.pointerSmooth.x * 1.5 * par + this.panelShift;
-    this.camera.position.y = 0.4 - this.pointerSmooth.y * 1.1 * par;
+    this.camera.position.y = -this.pointerSmooth.y * 1.1 * par;
     this.camera.position.z = dist;
-    this.lookTarget.set(this.panelShift * 0.55, 0.4, 0);
+    this.lookTarget.set(this.panelShift * 0.55, 0, 0);
     this.camera.lookAt(this.lookTarget);
 
     this.renderer.render(this.scene, this.camera);
