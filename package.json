@@ -28,7 +28,7 @@
     "check:shell": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-shell.js .",
     "check:render": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-render.js .",
     "check:island": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-island.js",
-    "check": "npm run selftest && npm run check:static && npm run check:ipc && npm run check:security && npm run check:data && npm run check:voice && npm run check:simvoice && npm run check:voicepack && npm run check:firstrun && npm run check:shell && npm run check:render && npm run check:ai",
+    "check": "npm run selftest && npm run check:static && npm run check:ipc && npm run check:security && npm run check:data && npm run check:voice && npm run check:simvoice && npm run check:voicepack && npm run check:firstrun && npm run check:shell && npm run check:render && npm run check:island && npm run check:ai",
     "check:fast": "npm run selftest && npm run check:static && npm run check:ipc && npm run check:security",
     "check:launch": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-launch.js",
     "bench": "node --experimental-vm-modules --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/bench.js",
@@ -41,8 +41,7 @@
   "devDependencies": {
     "acorn": "^8.18.0",
     "electron": "^33.2.0",
-    "electron-builder": "^25.1.8",
-    "three": "^0.170.0"
+    "electron-builder": "^25.1.8"
   },
   "build": {
     "appId": "ai.legion.desktop",
