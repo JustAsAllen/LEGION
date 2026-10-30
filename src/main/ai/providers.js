@@ -669,7 +669,7 @@ class GeminiProvider extends Provider {
   constructor(cfg, key) { super(cfg); this.key = key; }
   get id() { return 'gemini'; }
   get needsKey() { return true; }
-  get defaultModel() { return 'gemini-3.8-flash'; }
+  get defaultModel() { return 'gemini-3.5-flash'; }
   get label() { return 'Gemini'; }
   get model() {
     return this.cfg.model || process.env.GEMINI_MODEL || this.defaultModel;

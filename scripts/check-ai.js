@@ -878,7 +878,7 @@ async function liveChecks() {
   }
 
   const cfg = {
-    model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+    model: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
     baseUrl: process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta',
     temperature: 0,
     maxTokens: 80
@@ -909,4 +909,7 @@ await configMigrationChecks();
 await liveChecks();
 
 console.log(`\n${checks - failures}/${checks} ai checks passed`);
-process.exit(failures ? 1 : 0);
+// The live layer leaves undici keep-alive sockets in teardown. Calling
+// process.exit() while they close trips a libuv assertion on Windows, so a
+// passing run would look like a crash. Let the loop drain instead.
+process.exitCode = failures ? 1 : 0;

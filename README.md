@@ -155,7 +155,7 @@ Optional live Gemini verification:
 
     LEGION_LIVE_AI=1
     GEMINI_API_KEY=<your-key>
-    GEMINI_MODEL=gemini-3.8-flash
+    GEMINI_MODEL=gemini-3.5-flash
     npm run check:ai
 
 The live AI check is skipped unless explicitly enabled.

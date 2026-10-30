@@ -316,7 +316,7 @@ export function settingsPanel(host, app) {
       </label>
       <label class="field" id="set-model-field">
         <span>Model</span>
-        <input type="text" id="set-model" placeholder="gemini-3.8-flash" spellcheck="false" />
+        <input type="text" id="set-model" placeholder="gemini-3.5-flash" spellcheck="false" />
       </label>
       <div class="field" id="set-key-field">
         <span>API key</span>
@@ -743,7 +743,7 @@ export function settingsPanel(host, app) {
     syncProviderFields(); refreshKeyHint();
     const provider = $('#set-provider').value;
     const preset = {
-      gemini: { model: 'gemini-3.8-flash', baseUrl: 'https://generativelanguage.googleapis.com/v1beta' },
+      gemini: { model: 'gemini-3.5-flash', baseUrl: 'https://generativelanguage.googleapis.com/v1beta' },
       anthropic: { model: 'claude-sonnet-4-5', baseUrl: 'https://api.anthropic.com' },
       openai: { model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1' },
       mock: { model: '', baseUrl: '' },

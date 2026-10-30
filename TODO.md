@@ -41,7 +41,7 @@ The automated check suite is the source of truth for repeatable verification.
 - [x] Voice pack is included in the app and copied to editable resources/voicepack
 - [x] Piper resource directory is configured for packaged builds
 - [x] check:package statically validates package contents and can skip only an OS-level unsigned-binary launch block when explicitly requested
-- [~] Live Gemini turn — source path and opt-in check are implemented; requires GEMINI_API_KEY
+- [x] Live Gemini turn — streaming verified against `gemini-3.5-flash` with a real key
 - [~] Piper runtime — source path and packaging are implemented; requires a compatible piper.exe + ONNX model
 - [~] NSIS installer runtime verification — Windows signing/policy can block execution of unsigned self-built artifacts
 - [~] Code signing — requires a release certificate and signing environment
@@ -62,7 +62,7 @@ The automated check suite is the source of truth for repeatable verification.
 ### Hardening
 
 - [ ] Encrypt provider secrets at rest (currently plain text in `userData/secrets.json`)
-- [ ] Verify live model IDs (`gemini-3.8-flash`, `claude-sonnet-4-5`, `gpt-4o-mini`) against each provider
+- [ ] Verify live Claude/OpenAI model IDs (Gemini `gemini-3.5-flash` verified live)
 - [ ] Allow the desktop screenshot folder to be cleaned up or configured
 
 ### Voice packs
@@ -95,5 +95,5 @@ For live Gemini verification:
 
     LEGION_LIVE_AI=1
     GEMINI_API_KEY=<your-key>
-    GEMINI_MODEL=gemini-3.8-flash
+    GEMINI_MODEL=gemini-3.5-flash
     npm run check:ai
