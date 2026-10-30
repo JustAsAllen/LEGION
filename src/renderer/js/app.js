@@ -474,7 +474,12 @@ class Legion {
     });
 
     this._statusTimer = setInterval(() => this.#paintStatus(), 3000);
-    this._metricsTimer = setInterval(() => this.#pollFullMetrics(), 12000);
+    // Main already broadcasts CPU/RAM/network every 1.4s. This slower poll only
+    // refreshes the static snapshot and disk totals, which do not change every
+    // few seconds, so it runs once on boot and then every minute instead of
+    // asking the system layer for the same full snapshot every 12s.
+    this._metricsTimer = setInterval(() => this.#pollFullMetrics(), 60000);
+    this.#pollFullMetrics();
     window.addEventListener('beforeunload', this._dispose, { once: true });
   }
 
@@ -1216,6 +1221,9 @@ class Legion {
     this.store.setPanel(name);
     el.hidden = false;
     document.getElementById('panel-title').textContent = name;
+    // The memory panel is the one surface that reads disk totals; refresh them
+    // when it opens instead of running a global timer for a rarely opened view.
+    if (name === 'memory') this.#pollFullMetrics();
 
     try {
       if (name === 'conversation') this.panelApi = conversationPanel(host, this);
