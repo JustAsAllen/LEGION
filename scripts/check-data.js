@@ -162,6 +162,40 @@ const check = async (label, fn) => {
       if (/allowDev|disabled|not enabled|forbidden|off/i.test(e.message)) ok('dev tool blocked while allowDev is off', e.message.slice(0, 70));
       else bad('dev gate', new Error('unexpected error: ' + e.message));
     }
+    // Desktop tools: registration, the read path, and the confirmation gate.
+    // Destructive branches are declined on purpose so this check never closes a
+    // window or locks the session.
+    for (const name of ['desktop_windows', 'desktop_window', 'desktop_clipboard_read',
+      'desktop_clipboard_write', 'desktop_screenshot', 'desktop_media', 'desktop_notify', 'desktop_lock']) {
+      if (!tm.registry.get(name)) throw new Error('missing desktop tool: ' + name);
+    }
+    ok('desktop tools registered', '8');
+
+    const winList = await tm.execute('desktop_windows', { limit: 5 });
+    if (!Array.isArray(winList.result.windows)) throw new Error('desktop_windows did not return a list');
+    ok('desktop_windows returned a list', String(winList.result.windows.length));
+
+    confirmation = null;
+    for (const [name, args] of [
+      ['desktop_window', { action: 'close', target: 'legion-selftest-no-such-window' }],
+      ['desktop_lock', {}],
+      ['desktop_clipboard_read', {}]
+    ]) {
+      const pending = tm.execute(name, args).then(() => null, (e) => e);
+      await new Promise((r) => setTimeout(r, 40));
+      const saw = confirmation;
+      if (!saw || saw.tool !== name) throw new Error(name + ' did not request confirmation');
+      tm.resolveConfirmation(saw.token, false);
+      const err = await pending;
+      if (!err || err.code !== 'E_DECLINED') throw new Error(name + ' ran after decline: ' + (err && err.code));
+      confirmation = null;
+    }
+    ok('destructive desktop actions refuse to run without approval', 'declined');
+
+    const badMedia = await tm.execute('desktop_media', { action: 'format-disk' }).then(() => null, (e) => e);
+    if (!badMedia || badMedia.code !== 'E_VALIDATION') throw new Error('media enum was not enforced: ' + (badMedia && badMedia.code));
+    ok('desktop_media rejects unknown keys before running', 'E_VALIDATION');
+
     ok('list() requiresConfirmation present', 'ok');
   } catch (e) { bad('ToolManager', e); }
 

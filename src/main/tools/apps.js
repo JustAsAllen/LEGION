@@ -153,25 +153,13 @@ module.exports = function registerAppTools(registry) {
     risk: RISK.READ,
     description: 'List currently visible top-level windows and their owning process.',
     parameters: { type: 'object', properties: {} },
-    async handler() {
-      const script = [
-        "Add-Type @'",
-        "using System;using System.Text;using System.Runtime.InteropServices;",
-        "public class W{",
-        " [DllImport(\"user32.dll\")] public static extern bool EnumWindows(EnumProc f, IntPtr l);",
-        " [DllImport(\"user32.dll\")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);",
-        " [DllImport(\"user32.dll\")] public static extern bool IsWindowVisible(IntPtr h);",
-        " [DllImport(\"user32.dll\")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);",
-        " public delegate bool EnumProc(IntPtr h, IntPtr l);}",
-        "'@",
-        "$res=@(); [W]::EnumWindows({param($h,$l) if([W]::IsWindowVisible($h)){ $sb=New-Object Text.StringBuilder 512; [void][W]::GetWindowText($h,$sb,512); $t=$sb.ToString(); if($t){ $p=0; [void][W]::GetWindowThreadProcessId($h,[ref]$p); $pn=''; try{$pn=(Get-Process -Id $p -ErrorAction Stop).ProcessName}catch{}; $script:res+=[pscustomobject]@{title=$t;process=$pn;pid=$p} } }; return $true},[IntPtr]::Zero) | Out-Null;",
-        "$res | ConvertTo-Json -Compress"
-      ].join('\n');
-      const out = await ctx.run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 12000, system: true });
-      let parsed = [];
-      try { parsed = JSON.parse(String(out).trim() || '[]'); } catch (_) { parsed = []; }
-      if (!Array.isArray(parsed)) parsed = [parsed];
-      return { count: parsed.length, windows: parsed.filter((w) => w && w.title).slice(0, 40) };
+    async handler(_args, ctx) {
+      // Shared with desktop_windows so the Win32 shape cannot drift between the
+      // two tools. The previous inline version also parsed the child-process
+      // object as text, so it always returned an empty list.
+      const { listWindows } = require('./desktop');
+      const windows = await listWindows(ctx);
+      return { count: windows.length, windows: windows.slice(0, 40) };
     }
   });
 

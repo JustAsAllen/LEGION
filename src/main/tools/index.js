@@ -36,6 +36,7 @@ class ToolManager {
 
     require('./system')(this.registry);
     require('./apps')(this.registry);
+    require('./desktop')(this.registry);
     require('./files')(this.registry);
     require('./web')(this.registry);
     require('./dev')(this.registry);
