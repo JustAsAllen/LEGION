@@ -8,12 +8,12 @@ const os = require('os');
  * Filesystem sandbox.
  *
  * Every file tool path is resolved and checked against the allowlist before
- * any syscall touches the disk. No allowlist entry may sit outside the user
- * profile unless the user explicitly added it, and every resolved path must
- * remain inside an allowed root after symlink + traversal resolution.
+ * any syscall touches the disk. The application workspace is the default root;
+ * additional project directories or files must be explicitly approved.
  */
 
 const HOME = os.homedir();
+const DEFAULT_WORKSPACE = path.resolve(__dirname, '..', '..', '..');
 
 class SandboxError extends Error {
   constructor(message, code) {
@@ -29,12 +29,13 @@ function isInside(child, root) {
 }
 
 class PathSandbox {
-  constructor(extraRoots) {
+  constructor(extraRoots, workspaceRoot) {
+    this.workspaceRoot = workspaceRoot ? path.resolve(workspaceRoot) : DEFAULT_WORKSPACE;
     this.setRoots(extraRoots);
   }
 
   setRoots(extraRoots) {
-    const roots = [HOME];
+    const roots = [this.workspaceRoot];
     if (Array.isArray(extraRoots)) {
       for (const r of extraRoots) {
         if (typeof r === 'string' && r.trim()) {
@@ -64,7 +65,7 @@ class PathSandbox {
     const expanded = this._expand(raw);
     const abs = path.resolve(expanded);
 
-    if (options.allowRoot === false && (abs === HOME || /^[A-Za-z]:\\?$/.test(abs))) {
+    if (options.allowRoot === false && (abs === this.workspaceRoot || /^[A-Za-z]:\\?$/.test(abs))) {
       throw new SandboxError('Operating on a filesystem root is not permitted.', 'E_PATH_ROOT');
     }
 
@@ -110,4 +111,4 @@ class PathSandbox {
   }
 }
 
-module.exports = { PathSandbox, SandboxError, isInside, HOME };
+module.exports = { PathSandbox, SandboxError, isInside, HOME, DEFAULT_WORKSPACE };

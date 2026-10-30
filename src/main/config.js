@@ -5,13 +5,15 @@ const path = require('path');
 const os = require('os');
 
 const CONFIG_VERSION = 1;
+const AI_PROVIDERS = Object.freeze(['gemini', 'anthropic', 'openai', 'none']);
+const DEV_AI_PROVIDERS = Object.freeze(['mock']);
 
 const DEFAULTS = Object.freeze({
   version: CONFIG_VERSION,
   onboarded: false,
 
   ai: {
-    provider: 'none',            // none | anthropic | openai | ollama
+    provider: 'gemini',          // gemini | anthropic | openai | mock (dev only) | none
     model: '',
     baseUrl: '',
     temperature: 0.3,
@@ -41,12 +43,24 @@ const DEFAULTS = Object.freeze({
     ttsMode: 'auto',             // auto | offline | pack-only
     onlineVoice: 'en-US-AriaNeural',
     piperPath: '',               // optional explicit piper.exe; '' = probe
-    piperModel: ''               // optional explicit .onnx model
-    // speakerDeviceId, pitch, sttEngine and whisperModelPath were removed
+    piperModel: '',              // optional explicit .onnx model
+    mockTts: false,              // dev-only silent output for end-to-end checks
+    // Speech recognition, in tier order. This one is read for real, unlike the
+    // keys removed below, because more than one recogniser now exists.
+    //   auto     whisper.cpp if installed, else System.Speech on captured audio
+    //   whisper  whisper.cpp only; says so plainly if it is not installed
+    //   sapi     System.Speech only
+    sttEngine: 'auto',           // auto | whisper | sapi
+    whisperPath: '',             // optional explicit whisper.exe / whisper-cli.exe
+    whisperModel: '',            // optional explicit ggml model file
+    whisperLanguage: 'en',       // whisper.cpp -l value
+    // How long a capture waits for the speaker to finish before cutting out.
+    speechSilenceMs: 900,        // trailing silence that ends an utterance
+    speechMaxSeconds: 14,        // hard ceiling on a single capture
+    // speakerDeviceId, pitch and sttEngine's old boolean form were removed
     // because nothing ever read them. System.Speech exposes no output-device
-    // selection and no Pitch property, and only the SAPI dictation engine is
-    // implemented. Keeping unread keys in a config file is a setting that lies
-    // about what the application can do.
+    // selection and no Pitch property. Keeping unread keys in a config file is a
+    // setting that lies about what the application can do.
   },
 
   visual: {
@@ -75,7 +89,7 @@ const DEFAULTS = Object.freeze({
     allowDev: false,              // opt-in — runs allowlisted dev commands
     allowProductivity: true,
     requireConfirmation: true,
-    fileRoots: []                 // empty = user profile root only
+    fileRoots: []                 // workspace plus explicitly approved project roots/files
   },
 
   app: {
@@ -152,12 +166,17 @@ function prune(value, base) {
 }
 
 class ConfigStore {
-  constructor(dir) {
+  constructor(dir, options) {
     this.dir = dir;
     this.file = path.join(dir, 'settings.json');
+    this.allowMock = !!(options && options.allowMock);
     this.data = clone(DEFAULTS);
     this._writeTimer = null;
     this.load();
+  }
+
+  get providers() {
+    return this.allowMock ? AI_PROVIDERS.concat(DEV_AI_PROVIDERS) : AI_PROVIDERS;
   }
 
   load() {
@@ -165,6 +184,25 @@ class ConfigStore {
       const raw = fs.readFileSync(this.file, 'utf8');
       const parsed = JSON.parse(raw);
       this.data = prune(deepMerge(clone(DEFAULTS), parsed), DEFAULTS);
+      // Profiles written before Gemini replaced the local runtime still name a
+      // provider that no longer exists. Move them to the default and drop the
+      // local endpoint/model rather than leaving a setting that cannot work.
+      if (this.data.ai.provider === 'ollama') {
+        this.data.ai.provider = 'gemini';
+        this.data.ai.model = '';
+        this.data.ai.baseUrl = '';
+      } else if (this.data.ai.provider === 'mock' && !this.allowMock) {
+        // The development mock is never a production provider, even if a
+        // settings file was copied from a dev profile.
+        this.data.ai.provider = 'none';
+        this.data.ai.model = '';
+        this.data.ai.baseUrl = '';
+      } else if (!this.providers.includes(this.data.ai.provider)) {
+        this.data.ai.provider = 'none';
+      }
+      // Same rule for the silent test voice: a dev settings file copied into a
+      // production profile must not make the app pretend to speak.
+      if (!this.allowMock) this.data.voice.mockTts = false;
       // The pruned result is written back so the retired keys leave the file
       // instead of only being ignored in memory on this run.
       this.saveNow();
@@ -192,6 +230,7 @@ class ConfigStore {
       safe[key] = partial[key];
     }
     this.data = prune(deepMerge(this.data, safe), DEFAULTS);
+    if (!this.allowMock) this.data.voice.mockTts = false;
     this.scheduleSave();
     return this.data;
   }

@@ -54,6 +54,7 @@ function launch(target, args) {
     execFile(target, args || [], { windowsHide: false, timeout: 15000 }, (err) => {
       if (err && err.killed) return reject(new ToolError(`"${path.basename(target)}" did not respond.`, 'E_LAUNCH_TIMEOUT'));
       if (err && err.code === 'ENOENT') return reject(new ToolError(`"${path.basename(target)}" could not be found.`, 'E_NOT_FOUND'));
+      if (err) return reject(new ToolError(`Could not launch "${path.basename(target)}": ${err.message}`, 'E_LAUNCH'));
       resolve({ launched: target });
     });
   });
@@ -89,7 +90,15 @@ module.exports = function registerAppTools(registry) {
       },
       required: ['app']
     },
-    async handler({ app, target }) {
+    confirm(args) {
+      const sensitive = new Set(['settings', 'taskmgr', 'control', 'regedit', 'powershell', 'cmd', 'terminal']);
+      if (!sensitive.has(String(args.app || '').trim().toLowerCase())) return null;
+      return {
+        message: `This will open the system application "${args.app}"${args.target ? ` with "${args.target}"` : ''}.`,
+        impact: 'Opening a system-control or command application'
+      };
+    },
+    async handler({ app, target }, ctx) {
       const q = String(app).trim().toLowerCase();
       const found = APPS.find((a) => a.id === q) || APPS.find((a) => a.name.toLowerCase() === q);
       if (!found) {
@@ -97,9 +106,10 @@ module.exports = function registerAppTools(registry) {
       }
       const bin = firstExisting(found.targets);
       if (!bin) return { launched: false, reason: 'not_installed', app: found.name };
-      const args = target ? [String(target)] : [];
+      const openedTarget = target ? ctx.sandbox.resolve(String(target)) : null;
+      const args = openedTarget ? [openedTarget] : [];
       await launch(bin, args);
-      return { launched: true, app: found.name, executable: bin, openedWith: target || null };
+      return { launched: true, app: found.name, executable: bin, openedWith: openedTarget };
     }
   });
 

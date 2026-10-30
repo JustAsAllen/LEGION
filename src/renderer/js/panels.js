@@ -20,13 +20,14 @@ export function conversationPanel(host, app) {
         <button class="mic-btn" id="conv-mic" type="button" title="Hold to talk">
           <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="2" width="6" height="11" rx="3"/><path d="M4 9.5a6 6 0 0 0 12 0M10 15.5V18"/></svg>
         </button>
-        <button class="btn primary sm" type="submit" style="height:34px;padding:0 16px;border-radius:17px">Send</button>
+        <button class="btn primary sm" id="conv-send" type="submit" style="height:34px;padding:0 16px;border-radius:17px">Send</button>
       </form>
     </div>`;
 
   const list = host.querySelector('#conv-list');
   const form = host.querySelector('#conv-form');
   const input = host.querySelector('#conv-input');
+  const send = host.querySelector('#conv-send');
   const mic = host.querySelector('#conv-mic');
 
   function paint() {
@@ -50,12 +51,26 @@ export function conversationPanel(host, app) {
     list.scrollTop = list.scrollHeight;
   }
 
+  function syncBusy() {
+    const busy = !!app.busy;
+    send.disabled = busy;
+    send.textContent = busy ? 'Sending...' : 'Send';
+    send.setAttribute('aria-busy', String(busy));
+  }
+
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const text = input.value.trim();
     if (!text) return;
+    if (!app.sendText(text)) {
+      // Keep the draft when the turn cannot start, and never overwrite a new
+      // draft the user typed while the previous answer was still running.
+      if (!input.value.trim()) input.value = text;
+      input.focus();
+      app.toast('info', 'Still answering', 'Wait for the current reply, or press Esc to cancel it.');
+      return;
+    }
     input.value = '';
-    app.sendText(text);
   });
 
   mic.addEventListener('pointerdown', (e) => { e.preventDefault(); app.pushToTalkStart(); });
@@ -65,7 +80,9 @@ export function conversationPanel(host, app) {
 
   app.on('memory:session', paint);
   app.on('state', () => { mic.classList.toggle('is-hot', app.pttActive); });
+  app.on('busy', syncBusy);
   paint();
+  syncBusy();
   setTimeout(() => input.focus(), 60);
   return { refresh: paint, focus: () => input.focus() };
 }
@@ -285,22 +302,23 @@ export function settingsPanel(host, app) {
       <label class="field">
         <span>Provider</span>
         <select id="set-provider">
+          <option value="gemini">Gemini</option>
           <option value="anthropic">Anthropic</option>
           <option value="openai">OpenAI</option>
-          <option value="ollama">Ollama (local)</option>
+          <option value="mock" id="set-provider-mock" hidden>Mock (development)</option>
           <option value="none">None</option>
         </select>
       </label>
       <label class="field" id="set-url-field">
         <span>Base URL</span>
-        <input type="text" id="set-url" placeholder="https://api.anthropic.com" spellcheck="false" />
-        <span class="hint">Leave the default unless you are using a compatible gateway or a local Ollama host.</span>
+        <input type="text" id="set-url" placeholder="https://generativelanguage.googleapis.com/v1beta" spellcheck="false" />
+        <span class="hint">Leave the default unless you are using a compatible gateway.</span>
       </label>
       <label class="field" id="set-model-field">
         <span>Model</span>
-        <input type="text" id="set-model" placeholder="claude-sonnet-4-5" spellcheck="false" />
+        <input type="text" id="set-model" placeholder="gemini-3.8-flash" spellcheck="false" />
       </label>
-      <div class="field">
+      <div class="field" id="set-key-field">
         <span>API key</span>
         <div class="row">
           <input type="password" id="set-key" placeholder="Not stored" autocomplete="off" spellcheck="false" style="flex:1" />
@@ -311,8 +329,32 @@ export function settingsPanel(host, app) {
       </div>
       <div class="row" style="margin-top:12px">
         <button class="btn sm" id="set-probe">Test connection</button>
-        <span class="fr-hint" id="set-probe-hint">Sends one short request.</span>
+        <span class="fr-hint" id="set-probe-hint">Checks the configured provider and key.</span>
       </div>
+    </div>
+
+    <div class="sec" id="set-dev" hidden>
+      <h3 class="sec-title">Development</h3>
+      <p class="tool-desc" style="padding-left:0">Runs the real text, streaming, state and speech pipeline against a local mock. No network request and no API key.</p>
+      <div class="row wrap">
+        <button class="btn sm" id="set-simulate">Simulate message: Hello LEGION</button>
+        <button class="btn sm" id="set-sim-voice">Simulate voice: Hello LEGION</button>
+        <span class="fr-hint" id="set-simulate-hint">Development builds only.</span>
+      </div>
+      <p class="tool-desc" id="set-sim-voice-hint" style="padding-left:0">Listening → transcript → the normal reply pipeline. The microphone is never opened.</p>
+      <div class="row wrap" style="margin-top:8px">
+        <button class="btn sm ghost" id="set-test-tts">TEST TTS</button>
+        <button class="btn sm ghost" id="set-test-tts-mock">TEST MOCK TTS</button>
+        <span class="fr-hint" id="set-test-tts-hint">Speaks a known phrase through the real pipeline.</span>
+      </div>
+      <label class="toggle" style="margin-top:8px">
+        <input type="checkbox" id="set-mock-tts" />
+        <span class="sw"></span>
+        <span class="t-body">
+          <span class="t-label">Use mock speech for replies</span>
+          <span class="t-hint">Plays a silent clip and runs the speaking animation without audio hardware. Development builds only.</span>
+        </span>
+      </label>
     </div>
 
       <div class="sec">
@@ -534,8 +576,28 @@ export function settingsPanel(host, app) {
     } else if (res && res.ok) {
       hint.textContent = 'No clip matched, so SAPI spoke it';
     } else {
-      hint.textContent = (res && res.error && res.error.message) || 'Playback failed';
+      hint.textContent = (res && res.error) || 'Playback failed';
     }
+  }
+
+  async function runTtsTest(hint, mock) {
+    if (!hint) return;
+    if (app.info?.isDev !== true) return;
+    hint.className = 'fr-hint';
+    hint.textContent = mock ? 'Playing the mock voice...' : 'Synthesising...';
+    const res = await app.speak('The reactor is holding at ninety percent capacity.', mock ? { mock: true } : {});
+    if (!res || !res.ok) {
+      hint.className = 'fr-hint bad';
+      hint.textContent = res?.cancelled ? 'Speech was cancelled.' : (res?.error || 'Speech failed.');
+      return;
+    }
+    if (res.silent) {
+      hint.className = 'fr-hint';
+      hint.textContent = 'Silent: no clip matched in pack-only mode.';
+      return;
+    }
+    hint.className = 'fr-hint ok';
+    hint.textContent = `Spoke via ${res.mock ? 'mock voice' : (res.tier || res.source || 'unknown')} in ${Math.round(res.durationMs || 0)} ms.`;
   }
 
   /** Describe the pack in the panel, including anything the manifest got wrong. */
@@ -579,7 +641,10 @@ export function settingsPanel(host, app) {
     const c = app.config || {};
     const ai = c.ai || {};
     const voice = c.voice || {};
+    const dev = app.info?.isDev === true;
 
+    $('#set-provider-mock').hidden = !dev;
+    $('#set-dev').hidden = !dev;
     $('#set-provider').value = ai.provider || 'none';
     $('#set-model').value = ai.model || '';
     $('#set-url').value = ai.baseUrl || '';
@@ -646,20 +711,28 @@ export function settingsPanel(host, app) {
     $('#set-startup').checked = !!c.app?.launchAtStartup;
     $('#set-redact').checked = c.privacy?.redactSecrets !== false;
 
+    $('#set-mock-tts').checked = dev && voice.mockTts === true;
+
     $('#set-key').value = '';
     refreshKeyHint();
   }
 
   function syncProviderFields() {
     const p = $('#set-provider').value;
-    $('#set-url-field').hidden = p === 'none';
-    $('#set-model-field').hidden = p === 'none';
+    const noEndpoint = p === 'none' || p === 'mock';
+    $('#set-url-field').hidden = noEndpoint;
+    $('#set-model-field').hidden = noEndpoint;
+    $('#set-key-field').hidden = p === 'mock';
   }
 
   function refreshKeyHint() {
     const p = $('#set-provider').value;
+    if (p === 'mock') {
+      $('#set-key-hint').textContent = 'The development mock never uses an API key.';
+      return;
+    }
     const have = app.secrets?.[p];
-    const env = p === 'anthropic' ? 'ANTHROPIC_API_KEY' : p === 'openai' ? 'OPENAI_API_KEY' : 'the environment';
+    const env = p === 'gemini' ? 'GEMINI_API_KEY' : p === 'anthropic' ? 'ANTHROPIC_API_KEY' : p === 'openai' ? 'OPENAI_API_KEY' : 'the environment';
     $('#set-key-hint').textContent = have && have.configured
       ? 'A key is available to the main process. Leave the field empty to keep using it.'
       : `No key stored. You can also provide one through ${env}.`;
@@ -668,11 +741,16 @@ export function settingsPanel(host, app) {
   $('#set-provider').addEventListener('change', async () => {
     syncProviderFields(); refreshKeyHint();
     const provider = $('#set-provider').value;
-    const model = provider === 'anthropic' ? 'claude-sonnet-4-5' : provider === 'openai' ? 'gpt-4o' : provider === 'ollama' ? 'llama3.1' : '';
-    const baseUrl = provider === 'ollama' ? 'http://127.0.0.1:11434/v1' : provider === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1';
-    $('#set-model').value = model;
-    $('#set-url').value = baseUrl;
-    const r = await save({ ai: { provider, model, baseUrl } });
+    const preset = {
+      gemini: { model: 'gemini-3.8-flash', baseUrl: 'https://generativelanguage.googleapis.com/v1beta' },
+      anthropic: { model: 'claude-sonnet-4-5', baseUrl: 'https://api.anthropic.com' },
+      openai: { model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1' },
+      mock: { model: '', baseUrl: '' },
+      none: { model: '', baseUrl: '' }
+    }[provider] || { model: '', baseUrl: '' };
+    $('#set-model').value = preset.model;
+    $('#set-url').value = preset.baseUrl;
+    const r = await save({ ai: { provider, model: preset.model, baseUrl: preset.baseUrl } });
     if (!r.ok) app.toast('error', 'Could not save provider', r.error);
   });
 
@@ -683,7 +761,7 @@ export function settingsPanel(host, app) {
     const p = $('#set-provider').value;
     const key = $('#set-key').value.trim();
     if (!key) { app.toast('info', 'Paste a key first', null); return; }
-    if (p !== 'anthropic' && p !== 'openai') { app.toast('error', 'No key needed', `The ${p} provider does not use an API key.`); return; }
+    if (p !== 'gemini' && p !== 'anthropic' && p !== 'openai') { app.toast('error', 'No key needed', `The ${p} provider does not use an API key.`); return; }
     const res = await app.setKey(p, key);
     if (res.ok) { $('#set-key').value = ''; app.toast('ok', 'Key stored', 'Kept in your local data folder.'); refreshKeyHint(); }
     else app.toast('error', 'Could not store the key', res.error);
@@ -691,7 +769,7 @@ export function settingsPanel(host, app) {
 
   $('#set-key-clear').addEventListener('click', async () => {
     const p = $('#set-provider').value;
-    if (p !== 'anthropic' && p !== 'openai') return;
+    if (p !== 'gemini' && p !== 'anthropic' && p !== 'openai') return;
     const res = await app.setKey(p, '');
     if (res.ok) { app.toast('ok', 'Key removed', null); refreshKeyHint(); }
     else app.toast('error', 'Could not remove the key', res.error);
@@ -704,6 +782,63 @@ export function settingsPanel(host, app) {
     const res = await app.testProvider();
     hint.className = res.ok ? 'fr-hint ok' : 'fr-hint bad';
     hint.textContent = res.ok ? (res.detail || 'Reachable.') : (res.error || 'Unreachable.');
+  });
+
+  $('#set-simulate').addEventListener('click', async () => {
+    const hint = $('#set-simulate-hint');
+    if (app.info?.isDev !== true) return;
+    if (app.busy) {
+      hint.className = 'fr-hint bad';
+      hint.textContent = 'Wait for the current reply, or press Esc to cancel it.';
+      return;
+    }
+    if (app.config?.ai?.provider !== 'mock') {
+      const r = await save({ ai: { provider: 'mock', model: '', baseUrl: '' } });
+      if (!r.ok) {
+        hint.className = 'fr-hint bad';
+        hint.textContent = r.error || 'Could not select the mock provider.';
+        return;
+      }
+    }
+    const started = app.sendText('Hello LEGION');
+    hint.className = started ? 'fr-hint ok' : 'fr-hint bad';
+    hint.textContent = started ? 'Mock turn started through the normal pipeline.' : 'A turn is already running.';
+  });
+
+  $('#set-sim-voice').addEventListener('click', async () => {
+    const hint = $('#set-sim-voice-hint');
+    if (app.info?.isDev !== true) return;
+    if (app.busy || app.pttActive) {
+      hint.className = 'fr-hint bad';
+      hint.textContent = 'Wait for the current turn before simulating voice.';
+      return;
+    }
+    if (app.config?.ai?.provider !== 'mock') {
+      const r = await save({ ai: { provider: 'mock', model: '', baseUrl: '' } });
+      if (!r.ok) {
+        hint.className = 'fr-hint bad';
+        hint.textContent = r.error || 'Could not select the mock provider.';
+        return;
+      }
+    }
+    const res = await app.simulateVoice('Hello LEGION', { delayMs: 650 });
+    hint.className = res.ok ? 'fr-hint ok' : 'fr-hint bad';
+    hint.textContent = res.ok
+      ? 'Simulated voice turn started without the microphone.'
+      : (res.error?.message || 'Simulated voice could not start.');
+  });
+
+  $('#set-test-tts').addEventListener('click', () => runTtsTest($('#set-test-tts-hint'), false));
+  $('#set-test-tts-mock').addEventListener('click', () => runTtsTest($('#set-test-tts-hint'), true));
+  $('#set-mock-tts').addEventListener('change', async (e) => {
+    if (app.info?.isDev !== true) return;
+    const want = e.target.checked;
+    const r = await save({ voice: { mockTts: want } });
+    if (!r.ok) {
+      e.target.checked = !want;
+      $('#set-test-tts-hint').className = 'fr-hint bad';
+      $('#set-test-tts-hint').textContent = r.error || 'Could not save the mock voice setting.';
+    }
   });
 
   $('#set-voice').addEventListener('change', (e) => save({ voice: { voiceName: e.target.value } }));
@@ -720,12 +855,14 @@ export function settingsPanel(host, app) {
     const hint = e.currentTarget.parentElement.querySelector('.fr-hint');
     const test = () => app.speak('The reactor is holding at ninety percent capacity.')
       .then((r) => {
+        if (!hint) return;
+        if (r && !r.ok) { hint.textContent = r.cancelled ? 'Speech was cancelled.' : (r.error || 'Speech failed.'); return; }
         const via = r && (r.tier || r.source);
-        if (hint) hint.textContent = `Spoke via ${via || 'unknown'}${r && r.empty ? ' (silent, not recorded)' : ''}`;
+        hint.textContent = `Spoke via ${via || 'unknown'}${r && r.silent ? ' (silent, not recorded)' : ''}`;
       })
       .catch((err) => { if (hint) hint.textContent = err.message; });
     const mode = app.config?.voice?.ttsMode || 'auto';
-    if (mode === 'pack-only') {
+    if (mode === 'pack-only' && app.config?.voice?.mockTts !== true) {
       if (hint) hint.textContent = 'Pack-only mode is silent unless the phrase is recorded. Try "yes" instead.';
       return;
     }

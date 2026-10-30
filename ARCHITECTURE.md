@@ -29,7 +29,7 @@ The renderer never directly imports fs, child_process, or network clients. Provi
 | Area | Module | Responsibility |
 |---|---|---|
 | AI | src/main/ai/engine.js | conversation turn orchestration, tool rounds, streaming events |
-| AI | src/main/ai/providers.js | OpenAI, Anthropic and Ollama adapters |
+| AI | src/main/ai/providers.js | Gemini, OpenAI and Anthropic adapters |
 | AI | src/main/ai/personality.js | response/personality policy |
 | Voice | src/main/voice/tts.js | four-tier synthesis and provenance |
 | Voice | src/main/voice/voicepack.js | exact prerecorded phrase resolution |
@@ -53,7 +53,7 @@ Preload is the only renderer/main bridge. Each exposed action has a named channe
       ├─ ai:chat ───────────────► main / AI engine
       │                              │
       │                              ├─ provider request
-      │                              │    └─ Ollama NDJSON stream
+      │                              │    └─ Gemini/OpenAI/Anthropic SSE
       │                              │
       ◄──────── ai:event {delta} ────┘
       │
@@ -63,7 +63,47 @@ Preload is the only renderer/main bridge. Each exposed action has a named channe
 
 The network connection and credentials stay in main. The renderer receives text deltas and status/provenance events, not provider secrets.
 
-If the configured provider is unavailable, the engine can detect a reachable local Ollama service when no provider is configured. The automatic path uses the same provider-independent engine and the same ai:event channel.
+If the configured provider is unavailable, the engine refuses the turn with `E_NO_PROVIDER`. It does not probe for or adopt a hidden local backend; provider choice is explicit in Settings or first run.
+
+### Provider contract
+
+Every adapter honours the same shape, so nothing above it learns a backend detail:
+
+    chat({ system, messages, tools, temperature, maxTokens, signal, onDelta })
+      -> { text, toolCalls: [{ id, name, arguments }], usage, model }
+
+Three rules are enforced in `providers.js` rather than per adapter:
+
+- **Streaming is mandatory.** Passing `onDelta` makes every provider stream.
+  Gemini, OpenAI and Anthropic all send server-sent events. One line reader
+  serves all three, and tool calls are reassembled from whatever frames carried
+  them. Gemini function arguments arrive as complete objects; OpenAI and
+  Anthropic arguments are accumulated JSON fragments.
+- **Two deadlines, deliberately different.** `ttfb` bounds connect plus
+  queueing; `idle` bounds the gap between two chunks, so a long steady
+  generation is never killed but a stalled one cannot hang the turn.
+  Both are raced, not merely signalled, so a transport that ignores its abort
+  signal still cannot stall a turn.
+- **Cancellation is wired to the socket for the whole call**, headers and body
+  alike, and interrupts a pending read. Releasing the abort once headers land
+  would make cancel a no-op for the rest of the stream.
+
+Every failure is a `ToolError` with a stable code, so main can report it
+without inspecting the adapter: `E_AI_AUTH`, `E_AI_RATE_LIMIT`, `E_AI_BLOCKED`,
+`E_AI_HTTP`, `E_AI_TIMEOUT`, `E_AI_STREAM`, `E_AI_MALFORMED`, `E_AI_CONN`,
+`E_NO_PROVIDER`, `E_NO_KEY`, `E_ABORTED`.
+
+### Provider selection and status
+
+Gemini is the default provider, with OpenAI and Anthropic selectable alongside
+it. The selected provider is the only path: `resolveProvider` reads the setting
+and refuses an unset provider rather than guessing at a local runtime.
+
+`ai:status` and `ai:probe` report presence, not values. For cloud providers the
+key is read in main from the environment or `userData/secrets.json`; the
+renderer only learns whether a key is configured and which environment variable
+could supply it. A legacy saved `ollama` setting is migrated to Gemini and its
+local model and endpoint are cleared.
 
 ## 4. AI turn lifecycle
 
@@ -72,8 +112,7 @@ If the configured provider is unavailable, the engine can detect a reachable loc
     AIEngine.respond()
       ↓
     provider selection
-      ├─ configured provider
-      └─ automatic local Ollama detection when provider = none
+      └─ configured provider, or E_NO_PROVIDER when unset
       ↓
     provider.chat(..., onDelta)
       ↓
@@ -89,7 +128,9 @@ If the configured provider is unavailable, the engine can detect a reachable loc
 
 Tool execution remains in main and is subject to the confirmation/sandbox policy.
 
-## 5. Four-tier voice engine
+## 5. Four-tier speech synthesis
+
+This is the tier ladder for turning text into audio. Recognition is a separate ladder; see [8.1](#81-speech-recognition-pipeline).
 
     text
       │
@@ -135,17 +176,75 @@ The renderer is unbundled ES modules. Three.js is vendored locally. This keeps t
 
 ## 7. WebGL geometry lock
 
-The segmented ring must remain a circle regardless of a 16:9 viewport. The stage therefore uses a square camera projection for the mark rather than deriving the projection from the window aspect ratio.
+The segmented ring must remain a circle regardless of a 16:9 viewport. The stage derives the perspective projection from the renderer drawing-buffer aspect ratio, so the projection matches the widescreen canvas rather than being stretched by it.
 
-The renderer check records the live camera aspect and requires:
+The renderer check records the live camera and canvas aspects and requires them to match:
 
-    camera.aspect === 1
+  camera.aspect === canvas.width / canvas.height
 
-The canvas itself may be widescreen; the mark projection remains 1:1. This prevents the ring from becoming an oval when the Electron window is wider than it is tall.
+This preserves 1:1 screen-space geometry while allowing the canvas itself to remain widescreen. The vertical fit is held constant so the ring remains centered with padding around the shell chrome.
 
 ## 8. Audio path
 
 Microphone input and speech playback use separate analysers. TTS audio is decoded in the renderer with decodeAudioData, then routed through the speech analyser so visual state is driven by actual audio rather than a timer.
+
+### 8.1 Speech recognition pipeline
+
+The microphone belongs to the renderer, because only the browser can be given a chosen device and real echo cancellation. Recognition belongs to main, because only main can reach a recogniser. The two are joined by tapping the graph the browser already opened.
+
+    renderer                                  main
+    -------                                  ----
+    getUserMedia({ audio: {
+      echoCancellation, noiseSuppression,
+      autoGainControl, channelCount: 1 }})
+      │
+      ├─ createScriptProcessor ──┐
+      │                          │ 20ms Float32 frames
+      │                          ▼
+      │                  voice:captureChunk ──► resample to 16kHz mono
+      │                                             │
+      │                                             ▼
+      │                                          VAD segments
+      │                                             │
+      │                                             ▼
+      │                                       16-bit WAV in a temp file
+      │                                             │
+      │                                             ▼
+      │                             whisper.cpp, or System.Speech on the file
+      │                                             │
+      ◄──────────── voice:captureEnd ──────────────┘
+
+Frames go out on a fire-and-forget channel rather than `invoke`, because a 20ms frame is fifty messages a second for as long as someone is speaking, and none of them wants a reply. The frame that finishes a sentence therefore has no caller waiting on it, so main announces the result on `voice:captureEnd` instead of returning it.
+
+`channelCount: 1` is requested because a stereo stream doubles the bytes on the wire and every recogniser here wants mono. The fallback path matters more than it looks: when a device rejects an exact selector, the request is retried *without the device id but with all four processing constraints intact*. Retrying with `{ audio: true }` opens the stream cleanly and silently discards echo cancellation, noise suppression and automatic gain, which looks like success and is not.
+
+Chromium treats these constraints as hints rather than requirements — a device with no hardware echo canceller opens with `echoCancellation: false` and raises no error — so the granted values are read back from the track and reported in `voice:capabilities` rather than being presented as a guarantee.
+
+### 8.2 Why System.Speech cannot honour a device selection
+
+System.Speech exposes no capture-device API, only `SetInputToDefaultAudioDevice()`. The engine that listens to the system default input directly therefore cannot be given the microphone chosen in Settings, and cannot be given browser DSP either, because it opens the device behind the browser's back. That limitation is the reason the capture pipeline above exists: audio we take ourselves can be recognised from a file, and a file can be recogniser-agnostic.
+
+### 8.3 Device arbitration
+
+One input device serves the wake listener, a capture, and the synthesiser. System.Speech permits a single engine per device, so two of them at once makes both unusable rather than merely noisy. The listener is held for the *whole* of a capture and of a synthesis, nested by counter, and a pending restart is refused while the device is held.
+
+### 8.4 Recognition engines
+
+Engines are tried in tier order and the first that works wins:
+
+| engine | device | echo cancellation | notes |
+| --- | --- | --- | --- |
+| `whisper` | renderer-selected | yes | optional external binary |
+| `sapi-file` | renderer-selected | yes | System.Speech over a 16kHz WAV |
+| `sapi-device` | system default | no | System.Speech live; cannot select a device |
+
+whisper.cpp follows the same optional-external pattern as Piper: absent by default, probed in the background after the window is up rather than awaited on the startup path, and probed per device capability rather than trusted. Selecting `whisper` explicitly reports that the binary is missing instead of silently falling back, because a user who chose a specific engine should be told when they did not get it.
+
+Known limits of that tier, stated plainly rather than implied:
+
+- The model file is reused across calls from disk, but the CLI reloads the model per invocation. This is not an in-memory model cache. A persistent `whisper-server` process would be, at the cost of a resident process.
+- GPU use depends on a build with CUDA support, and a CUDA build must actually target the host's compute capability. On Blackwell (`sm_120`) an older prebuilt binary will fail or fall back to CPU; this cannot be detected from a version string and must be confirmed by running it.
+- Nothing about this tier is validated on the development machine, because no whisper.cpp binary or model is installed there.
 
 ## 9. State machine
 
@@ -184,9 +283,13 @@ Build products are never source-controlled.
 3. **Data/voice** — config, storage, TTS routing and voice-pack provenance.
 4. **Live renderer** — shell behaviour, WebGL state and square camera projection.
 5. **Package** — real unpacked build and installed resource layout.
-6. **Optional live AI** — real Ollama streamed turn with LEGION_LIVE_AI=1.
+6. **Optional live AI** — real Gemini streamed turn with `LEGION_LIVE_AI=1` and `GEMINI_API_KEY`.
 
 The default suite stays offline unless a live check is explicitly enabled.
+
+`check:voice` synthesises speech with the machine's own voice, writes it as a WAV, and pushes it back through the production path — resampler, VAD, endpointing, recogniser — so the words that come out are compared with the words that went in. It verifies the pipeline by recognition rather than by asserting that a function was called.
+
+The pipeline's weakest claims cannot be reached that way and are pinned on source instead: they concern device arbitration between the wake listener, a capture and the synthesiser, which needs a real microphone and a real second engine on one device. Assertions on structure are a weak substitute, and are labelled as such.
 
 ## 12. Data on disk
 

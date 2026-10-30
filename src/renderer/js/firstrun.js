@@ -19,9 +19,9 @@ export class FirstRun {
     this._saving = false;
     this._skipProviderCheck = false;
     this.draft = {
-      provider: 'none',
-      model: '',
-      baseUrl: '',
+      provider: 'gemini',
+      model: 'gemini-3.8-flash',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
       key: '',
       voiceName: '',
       storeHistory: true,
@@ -44,9 +44,14 @@ export class FirstRun {
       const b = e.target.closest('[data-provider]');
       if (!b) return;
       this.draft.provider = b.dataset.provider;
-      if (this.draft.provider === 'ollama') { this.draft.baseUrl = 'http://127.0.0.1:11434/v1'; this.draft.model = this.draft.model || 'llama3.1'; }
-      if (this.draft.provider === 'anthropic') { this.draft.baseUrl = 'https://api.anthropic.com'; this.draft.model = this.draft.model || 'claude-sonnet-4-5'; }
-      if (this.draft.provider === 'openai') { this.draft.baseUrl = 'https://api.openai.com/v1'; this.draft.model = this.draft.model || 'gpt-4o'; }
+      const preset = {
+        gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-3.8-flash' },
+        anthropic: { baseUrl: 'https://api.anthropic.com', model: 'claude-sonnet-4-5' },
+        openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' },
+        none: { baseUrl: '', model: '' }
+      }[this.draft.provider] || { baseUrl: '', model: '' };
+      this.draft.baseUrl = preset.baseUrl;
+      this.draft.model = preset.model;
       for (const x of r.querySelectorAll('[data-provider]')) x.classList.toggle('is-selected', x === b);
       r.querySelector('#fr-url-field').hidden = this.draft.provider === 'none';
       r.querySelector('#fr-url').value = this.draft.baseUrl;
@@ -93,7 +98,7 @@ export class FirstRun {
 
   #refreshKeyStatus() {
     const el = this.root.querySelector('#fr-key-status');
-    const needsKey = this.draft.provider === 'anthropic' || this.draft.provider === 'openai';
+    const needsKey = this.draft.provider === 'gemini' || this.draft.provider === 'anthropic' || this.draft.provider === 'openai';
     if (!needsKey) { el.textContent = 'This provider does not use an API key.'; el.className = 'fr-key-status'; return; }
     if (this.draft.key) { el.textContent = `Key entered (${this.draft.key.length} characters).`; el.className = 'fr-key-status ok'; return; }
     const stored = this.app.secrets?.[this.draft.provider];
@@ -221,7 +226,7 @@ export class FirstRun {
     const cfgRes = await app.setConfig(patch);
     if (!cfgRes.ok) return fail(cfgRes.error);
 
-    if (d.key && (provider === 'anthropic' || provider === 'openai')) {
+    if (d.key && (provider === 'gemini' || provider === 'anthropic' || provider === 'openai')) {
       const kr = await app.setKey(provider, d.key);
       if (!kr.ok) app.toast('warn', 'Key not stored', kr.error);
     }

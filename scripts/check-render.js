@@ -22,17 +22,34 @@ const OUT = path.join(ROOT, 'artifacts');
 const BASE = 'stage4-1-main-shell';
 
 /**
- * Pick a screenshot name that is not already taken.
+ * Candidate screenshot paths, best first.
  *
  * A previous capture is often still open in an image viewer, which locks the
- * file on Windows and turns a plain overwrite into a hard failure.
+ * file on Windows and turns a plain overwrite into a hard failure, so unused
+ * names are preferred and a fresh run never disturbs an existing capture.
+ *
+ * Once every slot is taken the harness used to abort, which meant the suite
+ * stopped passing after 50 runs for reasons unrelated to the code under test.
+ * The oldest captures are recycled instead, newest kept.
  */
-function pickShot() {
-  for (let i = 0; i < 50; i++) {
-    const p = path.join(OUT, i ? `${BASE}-${i}.png` : `${BASE}.png`);
-    if (!fs.existsSync(p)) return p;
+function shotCandidates() {
+  const names = [];
+  for (let i = 0; i < 50; i++) names.push(path.join(OUT, i ? `${BASE}-${i}.png` : `${BASE}.png`));
+
+  const free = names.filter((p) => !fs.existsSync(p));
+  if (free.length) return free;
+
+  const mtime = (p) => { try { return fs.statSync(p).mtimeMs; } catch (_) { return 0; } };
+  return names.map((p) => ({ p, mtime: mtime(p) })).sort((a, b) => a.mtime - b.mtime).map((x) => x.p);
+}
+
+/** Write the capture to the first candidate that accepts it. */
+function writeShot(buf) {
+  let lastErr = null;
+  for (const p of shotCandidates()) {
+    try { fs.writeFileSync(p, buf); return p; } catch (err) { lastErr = err; }
   }
-  throw new Error('too many captures in artifacts/');
+  throw lastErr || new Error('no writable capture slot in artifacts/');
 }
 
 let failures = 0;
@@ -281,7 +298,9 @@ async function main() {
     check('WebGL canvas present', a.hasCanvas, a.canvasCss ? `css ${a.canvasCss.w}x${a.canvasCss.h} dpr=${a.dpr}` : 'missing');
     check('drawing buffer allocated', a.drawBuffer && a.drawBuffer.w > 0, a.drawBuffer ? `${a.drawBuffer.w}x${a.drawBuffer.h}` : 'none');
     check('WebGL context live', a.hasGl && a.glLost === false, `lost=${a.glLost}`);
-    check('mark projection stays square on widescreen', a.cameraAspect === 1, `camera.aspect=${a.cameraAspect}`);
+    const expectedAspect = a.canvasCss && a.canvasCss.h ? a.canvasCss.w / a.canvasCss.h : 0;
+    check('mark projection matches the canvas aspect', expectedAspect > 0 && Math.abs(a.cameraAspect - expectedAspect) < 0.001,
+      `camera.aspect=${a.cameraAspect} canvas.aspect=${expectedAspect}`);
     check('no pending GL error', a.glError === 0, `glGetError=${a.glError}`);
 
     check('particle cloud uploaded', a.cloudCount > 0, `${a.cloudCount?.toLocaleString()} elements`);
@@ -394,10 +413,9 @@ async function main() {
       voiceUi.found ? JSON.stringify(voiceUi.hint) : 'control missing');
 
     // Screenshot + real pixel analysis.
-    const SHOT = pickShot();
     const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     const buf = Buffer.from(shot.data, 'base64');
-    fs.writeFileSync(SHOT, buf);
+    const SHOT = writeShot(buf);
     const png = decodePng(buf);
     const an = analyse(png);
     console.log(`\n  framebuffer ${an.width}x${an.height}  ${(buf.length / 1024).toFixed(0)} KB  ${an.colors} distinct colours`);

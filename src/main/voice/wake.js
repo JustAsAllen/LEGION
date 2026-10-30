@@ -31,6 +31,17 @@ const ERR_PREFIX = '__LEGION_ERR__';
 
 const MAX_RESTARTS = 3;
 const RESTART_DELAY_MS = 4000;
+// A listener that has stayed up this long counts as healthy, which forgives the
+// restart budget. Without this, continuous mode resets the counter on every
+// resume and a crash-looping listener restarts forever.
+const HEALTHY_AFTER_MS = 60000;
+// After a hit, ignore further phrases briefly. The recogniser polls every 600ms,
+// so the tail of one utterance can produce a second match for a wake the app is
+// still acting on.
+const HIT_COOLDOWN_MS = 1500;
+// A listener that has not reported ready by now is hung; System.Speech can
+// block forever inside Recognize() and never write a line.
+const READY_TIMEOUT_MS = 20000;
 
 const PS_WAKE = `
 $ErrorActionPreference = 'Stop'
@@ -92,6 +103,7 @@ let desired = null;      // { phrase, onWake, onError } while the listener shoul
 let suspended = 0;       // capture/speech holds, so a suspend nests correctly
 let restarts = 0;
 let restartTimer = null;
+let lastHitAt = 0;
 
 function unlink(file) { try { if (file && fs.existsSync(file)) fs.unlinkSync(file); } catch (_) { /* ignore */ } }
 
@@ -134,14 +146,22 @@ function matchWake(phrase, heard) {
 
 function handleLine(line) {
   if (!session) return;
-  if (line.startsWith(READY)) { session.ready = true; return; }
+  if (line.startsWith(READY)) {
+    session.ready = true;
+    if (session.readyTimer) { clearTimeout(session.readyTimer); session.readyTimer = null; }
+    return;
+  }
   if (line.startsWith(HEARD)) {
     const heard = line.slice(HEARD.length).trim();
     if (!heard) return;
     // A suspended listener is being torn down; ignore the tail end of its audio.
     if (session.suspend) return;
+    // The app is still acting on the previous hit. Firing again now would open a
+    // second capture on top of the first.
+    if (Date.now() - lastHitAt < HIT_COOLDOWN_MS) return;
     const hit = matchWake(desired && desired.phrase, heard);
     if (!hit) return;
+    lastHitAt = Date.now();
     if (desired && typeof desired.onWake === 'function') {
       try { desired.onWake({ ...hit, heard }); } catch (err) { console.error('[wake] handler failed:', err); }
     }
@@ -162,6 +182,7 @@ function teardown() {
   const s = session;
   session = null;
   if (!s) return;
+  if (s.readyTimer) { clearTimeout(s.readyTimer); s.readyTimer = null; }
   unlink(s.stopFile);
   unlink(s.scriptFile);
   try { s.child.stdout.removeAllListeners('data'); } catch (_) { /* ignore */ }
@@ -177,6 +198,10 @@ function spawnListener() {
     return false;
   }
   if (session) return true;
+  // A pending restart must never bring the listener up while something else owns
+  // the input device. System.Speech allows one engine per device, so this would
+  // break the capture it collided with and neither would work.
+  if (suspended > 0) return false;
 
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const stopFile = path.join(os.tmpdir(), `legion-wake-${stamp}.flag`);
@@ -197,7 +222,20 @@ function spawnListener() {
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptFile, stopFile],
     { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }
   );
-  session = { child, stopFile, scriptFile, ready: false, suspend: false, buffer: '' };
+  session = { child, stopFile, scriptFile, ready: false, suspend: false, buffer: '', readyTimer: null, bornAt: Date.now() };
+
+  // A recogniser that starts the process but never becomes ready is stuck, not
+  // slow, and nothing else would ever notice. Held in a local because teardown
+  // clears the session out from under the timer.
+  const pending = session;
+  pending.readyTimer = setTimeout(() => {
+    if (!pending.ready || session !== pending) return;
+    if (desired && typeof desired.onError === 'function') {
+      try { desired.onError({ code: 'E_WAKE_TIMEOUT', message: 'The wake word listener did not start in time.' }); } catch (_) { /* ignore */ }
+    }
+    teardown();
+  }, READY_TIMEOUT_MS);
+  if (pending.readyTimer.unref) pending.readyTimer.unref();
 
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk) => {
@@ -211,6 +249,7 @@ function spawnListener() {
   });
   child.stderr.resume();
 
+  const own = session;
   child.on('error', (err) => {
     if (desired && typeof desired.onError === 'function') {
       try { desired.onError({ code: 'E_WAKE_SPAWN', message: `Could not start the wake word listener: ${err.message}` }); } catch (_) { /* ignore */ }
@@ -220,11 +259,17 @@ function spawnListener() {
   });
 
   child.on('exit', () => {
-    const wasSuspended = session && session.suspend;
+    // Read the flags from the child that is exiting, not from the module
+    // variable: teardown() has already cleared `session`, so asking it here
+    // would always answer "not suspended" and turn every intentional suspend
+    // into an unexpected exit.
+    const wasSuspended = own.suspend;
+    const livedLongEnough = Date.now() - own.bornAt >= HEALTHY_AFTER_MS;
     teardown();
     if (!desired || wasSuspended) return;
     // The recogniser died on its own. Retry a bounded number of times, then
     // give up and say so rather than respawning forever in a tight loop.
+    if (livedLongEnough) restarts = 0;
     if (restarts >= MAX_RESTARTS) {
       restarts = 0;
       if (typeof desired.onError === 'function') {
@@ -268,6 +313,7 @@ function stop() {
   restarts = 0;
   desired = null;
   suspended = 0;
+  lastHitAt = 0;
   const was = !!session;
   teardown();
   return { stopped: was };
@@ -286,7 +332,12 @@ function suspend() {
 
 function resume() {
   if (suspended > 0) suspended--;
-  if (suspended === 0 && desired) { restarts = 0; spawnListener(); }
+  // The restart budget is deliberately NOT reset here. Continuous mode resumes
+  // after every capture and every utterance, so clearing it on resume meant a
+  // listener that crashed immediately could never reach the limit and would
+  // respawn for as long as the user left the app running. Only an explicit
+  // start, or a child that stayed up long enough, forgives the budget.
+  if (suspended === 0 && desired) spawnListener();
   return { suspended: suspended > 0, running: !!session };
 }
 

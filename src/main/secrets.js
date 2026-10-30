@@ -15,9 +15,9 @@ const fs = require('fs');
 const path = require('path');
 
 const ENV_MAP = Object.freeze({
+  gemini: 'GEMINI_API_KEY',
   anthropic: 'ANTHROPIC_API_KEY',
-  openai: 'OPENAI_API_KEY',
-  ollama: null
+  openai: 'OPENAI_API_KEY'
 });
 
 const SECRETS_FILE = 'secrets.json';

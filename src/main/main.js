@@ -39,8 +39,9 @@ const USER_DATA = app.getPath('userData');
 let win = null;
 let tray = null;
 let quitting = false;
+let speechSerial = 0;
 
-const config = new ConfigStore(USER_DATA);
+const config = new ConfigStore(USER_DATA, { allowMock: isDev });
 const secrets = new SecretStore(USER_DATA);
 const memory = new MemoryStore(USER_DATA, config);
 const productivity = new (require('./tools/productivity').ProductivityStore)(path.join(USER_DATA, 'productivity.json'));
@@ -56,6 +57,7 @@ const toolManager = new ToolManager({
   memory,
   productivity,
   si,
+  workspaceRoot: path.resolve(__dirname, '..', '..'),
   onConfirm: (request) => {
     send('tool:confirmation', request);
   }
@@ -66,6 +68,7 @@ const ai = new AIEngine({
   secrets,
   toolManager,
   memory,
+  isDev,
   onEvent: (type, payload) => {
     send('ai:event', { type, payload });
     if (type === 'tool' && payload.phase === 'start') setState('PROCESSING');
@@ -373,6 +376,12 @@ function registerIpc() {
   });
 
   handle('config:set', async (patch) => {
+    if (!isDev && patch && patch.ai && patch.ai.provider === 'mock') {
+      throw new Error('The development mock provider is not available in this build.');
+    }
+    if (!isDev && patch && patch.voice && patch.voice.mockTts === true) {
+      throw new Error('Mock speech output is not available in this build.');
+    }
     config.patch(patch || {});
     toolManager.syncSandbox();
     applyStartupSetting();
@@ -403,7 +412,9 @@ function registerIpc() {
 
   handle('ai:status', async () => ai.status());
   handle('ai:probe', async () => {
-    try { return await ai.probe(); }
+    try {
+      return await ai.probe();
+    }
     catch (err) { return { online: false, error: err.message }; }
   });
   handle('ai:profile', async (id) => {
@@ -427,6 +438,10 @@ function registerIpc() {
     } catch (err) {
       setError(err);
       return { ok: false, error: { message: err.message, code: err.code || 'E_AI' } };
+    } finally {
+      // A typed turn that produced no audio leaves main in PROCESSING. Only
+      // settle it here if speech did not take authority in the meantime.
+      if (currentState === 'PROCESSING') setState('IDLE');
     }
   });
 
@@ -456,6 +471,10 @@ function registerIpc() {
   });
 
   handle('tools:list', async () => ({ tools: toolManager.list(), enabled: toolManager.enabledCategories() }));
+  handle('tools:audit', async (limit) => {
+    const n = Math.max(1, Math.min(Number(limit) || 50, 200));
+    return { entries: toolManager.auditLog().slice(-n) };
+  });
   handle('tools:invoke', async (name, args) => {
     try {
       const res = await toolManager.execute(String(name || ''), args || {});
@@ -474,6 +493,120 @@ function registerIpc() {
   handle('voice:wakeStatus', async () => wake.status());
   handle('voice:wakeStop', async () => wake.stop());
   handle('voice:wakeStart', async () => syncWakeListener());
+
+  /* ---------------- renderer-fed capture ---------------- */
+
+  /**
+   * The capture pipeline, end to end.
+   *
+   * The renderer owns the microphone because only the browser can be given a
+   * chosen device and real echo cancellation. Main owns the rest, because only
+   * main can reach a recogniser, so the audio is tapped in the renderer and
+   * segmented here.
+   *
+   * Two details are load bearing:
+   *
+   * The completion event is pushed rather than returned. Audio arrives on a
+   * fire-and-forget channel, so the call that finally recognises a completed
+   * utterance has nobody waiting on it; whoever opened the capture has to be
+   * told from the outside.
+   *
+   * The wake listener stands down for the whole session, not per chunk. It
+   * holds the same default input device and System.Speech allows one recogniser
+   * per device, so two of them at once makes the capture unrecognisable rather
+   * than merely noisy.
+   */
+  let captureSession = null;
+
+  function endCaptureSession(id, res) {
+    const prev = captureSession;
+    if (!prev || prev.id !== id) return;
+    captureSession = null;
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('voice:captureEnd', Object.assign({ id: prev.id }, res || {}));
+    }
+    if (res && res.ok) setState('IDLE');
+    else if (res && res.stopped) setState('IDLE');
+    else setState('ERROR', { message: (res && res.error && res.error.message) || 'Voice recognition failed.', code: (res && res.error && res.error.code) || 'E_STT', at: Date.now() });
+    if (prev.holdsWake) wake.resume();
+  }
+
+  handle('voice:captureStart', async (opts) => {
+    const o = opts || {};
+    // A second start without a stop would orphan the first session and its
+    // microphone frames, so the previous one is closed out deliberately.
+    if (captureSession) {
+      stt.stopCapture(captureSession.id);
+      captureSession = null;
+      wake.resume();
+    }
+    // Synthesis from a previous turn is still audible here; give the VAD a
+    // moment of grace so LEGION does not transcribe its own tail.
+    wake.suspend();
+    let session;
+    try {
+      const v = config.get().voice || {};
+      session = stt.startCapture({
+        maxSeconds: o.maxSeconds || v.speechMaxSeconds || 14,
+        engine: o.engine || v.sttEngine || 'auto',
+        // Only passed through when the settings left them at their defaults, so
+        // a caller that genuinely wants different numbers is not overruled by
+        // the user's configuration.
+        vad: {
+          ...(Number(v.speechSilenceMs) ? { endSilenceMs: Number(v.speechSilenceMs) } : {}),
+          ...(o.vad || {})
+        },
+        whisperPath: v.whisperPath,
+        whisperModel: v.whisperModel,
+        whisperLanguage: v.whisperLanguage
+      });
+    } catch (err) {
+      wake.resume();
+      throw err;
+    }
+    captureSession = { id: session.id, holdsWake: true };
+    setState('LISTENING');
+    session.promise
+      .then((res) => { endCaptureSession(session.id, res); })
+      .catch((err) => { endCaptureSession(session.id, { ok: false, error: { code: 'E_STT', message: err.message } }); });
+    return {
+      ok: true,
+      id: session.id,
+      sampleRate: session.sampleRate,
+      maxSeconds: session.maxSeconds,
+      // The renderer needs to know whether its own capture DSP is in effect; a
+      // device that refused echo cancellation should not be presented as though
+      // it had one.
+      constraints: (o.constraints || null)
+    };
+  });
+
+  ipcMain.on('voice:captureChunk', (event, id, samples, sampleRate) => {
+    if (!win || event.sender !== win.webContents) return;
+    // Nothing is awaited here on purpose: this fires fifty times a second and
+    // must not queue work behind the transcription that closes the session.
+    stt.pushCapture(String(id || ''), samples, { sampleRate: Number(sampleRate) || 0 }).catch(() => {});
+  });
+
+  handle('voice:captureStop', async (id) => {
+    const target = id ? String(id) : (captureSession && captureSession.id);
+    if (captureSession && target && captureSession.id !== target) return { ok: false, stopped: false, stale: true };
+    const stopped = stt.stopCapture(target || undefined);
+    return { ok: true, stopped };
+  });
+
+  handle('voice:captureAbort', async (id) => {
+    const target = id ? String(id) : (captureSession && captureSession.id);
+    if (captureSession && target && captureSession.id !== target) return { ok: false, stale: true };
+    const was = !!captureSession && (!target || captureSession.id === target);
+    stt.stopCapture(target || undefined);
+    if (was) {
+      captureSession = null;
+      wake.resume();
+    }
+    setState('IDLE');
+    return { ok: was };
+  });
   handle('voice:listen', async (opts) => {
     const o = opts || {};
     setState('LISTENING');
@@ -508,11 +641,18 @@ function registerIpc() {
 
   handle('voice:speak', async (text, opts) => {
     const o = opts || {};
+    if (o.mock === true && !isDev) {
+      return { ok: false, error: { message: 'Mock speech output is not available in this build.', code: 'E_DEV_ONLY' } };
+    }
     const v = config.get().voice;
+    const requestSerial = ++speechSerial;
     setState('SPEAKING');
     // Synthesis is captured from the same input device, so the wake listener
-    // must not be running or LEGION answers its own voice.
+    // must not be running or LEGION answers its own voice. The capture guard is
+    // the same idea for an open renderer capture: it keeps the VAD closed for
+    // the length of the utterance plus its tail.
     wake.suspend();
+    try { stt.guardCapture(1600); } catch (_) { /* no capture open */ }
     try {
       const res = await tts.synthesize(text, {
         voice: o.voice || v.voiceName || null,
@@ -523,13 +663,55 @@ function registerIpc() {
         ttsMode: o.ttsMode || v.ttsMode,
         onlineVoice: o.onlineVoice || v.onlineVoice,
         piperPath: v.piperPath,
-        piperModel: v.piperModel
+        piperModel: v.piperModel,
+        // Only the dev build can request the silent test tier, and the check
+        // above is what makes that true even if the renderer asks directly.
+        mock: o.mock === true
       });
-      return { ok: true, format: res.format, sampleRate: res.sampleRate, durationMs: res.durationMs, source: res.source || 'sapi', tier: res.tier || null, mode: res.mode || null, pack: res.pack || null, phrase: res.phrase || null, empty: !!res.empty, reason: res.reason || null, audioBase64: res.audio ? res.audio.toString('base64') : null };
+      if (requestSerial !== speechSerial) {
+        // A newer request owns the state and the wake listener now. Calling
+        // resume here could reopen the microphone in the middle of its speech.
+        return { ok: false, cancelled: true, error: { message: 'Speech cancelled.', code: 'E_TTS_CANCELLED' } };
+      }
+      if (res.empty) {
+        // Pack-only produced silence. There is nothing to play, so release the
+        // device now instead of waiting for a renderer speechEnd that may not
+        // come.
+        wake.resume();
+        setState('IDLE');
+      }
+      return {
+        ok: true,
+        format: res.format,
+        sampleRate: res.sampleRate,
+        durationMs: res.durationMs || 0,
+        source: res.source || 'sapi',
+        tier: res.tier || null,
+        mode: res.mode || null,
+        mock: !!res.mock,
+        pack: res.pack || null,
+        phrase: res.phrase || null,
+        empty: !!res.empty,
+        reason: res.reason || null,
+        audioBase64: res.audio ? res.audio.toString('base64') : null
+      };
     } catch (err) {
-      setError(err);
+      // TTS is not an application failure: the reply is already on screen and
+      // the user can still read it. Release the device and settle to IDLE so a
+      // missing voice runtime cannot leave the state machine or the wake
+      // listener stuck. A stale request must not touch either.
+      if (requestSerial === speechSerial) {
+        wake.resume();
+        setState('IDLE');
+      }
       return { ok: false, error: { message: err.message, code: err.code || 'E_TTS' } };
     }
+  });
+
+  handle('voice:speechCancel', async () => {
+    speechSerial++;
+    wake.resume();
+    return { ok: true, cancelled: true };
   });
 
   // Playback happens in the renderer, so main cannot see when the audio ends.
@@ -654,6 +836,10 @@ if (!app.requestSingleInstanceLock() && !isDev) {
     // Honour a saved wake word setting on launch, not only after the user
     // toggles it in Settings.
     syncWakeListener();
+    // Find out about whisper.cpp in the background. Deliberately not awaited:
+    // a missing binary is the common case and must never delay the window, and
+    // the probe costs a process launch the first time it runs.
+    stt.scheduleWhisperProbe(config.get().voice);
 
     const onboarded = config.get().onboarded;
     const playBoot = config.get().app.playBootAnimation && onboarded;
@@ -680,11 +866,13 @@ if (!app.requestSingleInstanceLock() && !isDev) {
 
   app.on('before-quit', () => {
     quitting = true;
+    speechSerial++;
     stopMetrics();
     config.saveNow();
     // The wake recogniser is a real child process holding the microphone; it
     // has to die with the app or it outlives LEGION and keeps the device busy.
     wake.stop();
+    stt.stopCapture();
     stt.stopActive();
     try { globalShortcut.unregisterAll(); } catch (_) { /* ignore */ }
     toolManager.rejectAll('shutdown');

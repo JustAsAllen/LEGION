@@ -69,7 +69,8 @@ function baseInstruction(p, cfg) {
     `- Keep replies under roughly ${p.maxWords} words unless the user asks for more.`,
     ``,
     `TOOLS`,
-    `- You can act on the machine through tools. Use them rather than guessing.`,
+    `- Use tools only when the user explicitly asks you to inspect, change, open, run, search, or otherwise act on the machine.`,
+    `- For ordinary conversation, explanations, and general questions, answer directly and do not call tools.`,
     `- Destructive tools require the user's explicit approval; describe the impact first.`,
     `- If a tool fails, report the real error. Do not retry silently more than once.`
   ];

@@ -2,7 +2,7 @@
 
 > **A personal AI intelligence living inside your computer.**
 
-LEGION is a Windows-first Electron desktop assistant with a strict main/renderer security boundary, real-time WebGL visuals, voice input/output, provider-independent AI, local Ollama streaming, four-tier TTS, tool execution with confirmation, and production packaging through electron-builder.
+LEGION is a Windows-first Electron desktop assistant with a strict main/renderer security boundary, real-time WebGL visuals, voice input/output, provider-independent AI, streamed Gemini responses, four-tier TTS, tool execution with confirmation, and production packaging through electron-builder.
 
 ## Executive summary
 
@@ -24,8 +24,8 @@ The visual path is equally deliberate: a procedurally generated three-segment ri
 | Main process | Node.js / CommonJS |
 | Renderer | Vanilla ES modules, DOM, WebGL2, Web Audio |
 | 3D/rendering | Three.js, vendored for the renderer |
-| AI | Provider-independent engine + OpenAI/Anthropic/Ollama adapters |
-| Local AI | Ollama NDJSON streaming + automatic local detection |
+| AI | Provider-independent engine + Gemini/OpenAI/Anthropic adapters |
+| Streaming | Gemini SSE, OpenAI SSE and Anthropic event streams |
 | Voice | Voice pack → Edge neural → Piper → Windows SAPI |
 | IPC | Electron contextBridge + explicit channel allowlist |
 | Packaging | electron-builder, NSIS + portable Windows targets |
@@ -51,7 +51,7 @@ The visual path is equally deliberate: a procedurally generated three-segment ri
                    │                │
               AI providers       TTS engine
                    │                │
-          Ollama/OpenAI/       1. Voice pack
+          Gemini/OpenAI/      1. Voice pack
           Anthropic            2. Edge neural
                                3. Piper local
                                4. Windows SAPI
@@ -60,7 +60,7 @@ The visual path is equally deliberate: a procedurally generated three-segment ri
 
 The renderer submits turns through the ai:chat channel. Main owns the provider connection and emits provider text deltas through the existing ai:event channel. The renderer accumulates and displays those deltas live.
 
-Ollama uses its newline-delimited streaming response when the engine supplies a delta callback. If no provider is configured, LEGION probes local Ollama and can automatically use it when a reachable model is available. No API key is required for that local path.
+Gemini is the default provider. It streams server-sent events through the same `ai:event` channel, sends the registry's tool schemas in Gemini's uppercase OpenAPI form, and reports blocked prompts, auth failures and rate limits as typed errors. An unset provider is refused with `E_NO_PROVIDER`; there is no hidden local fallback.
 
 When the turn completes, the final accumulated reply enters the normal TTS pipeline. Streaming changes the response presentation, not the voice/security architecture.
 
@@ -136,10 +136,11 @@ Fast static/security gate:
 
     npm run check:fast
 
-Optional live Ollama verification:
+Optional live Gemini verification:
 
     LEGION_LIVE_AI=1
-    LEGION_OLLAMA_MODEL=<installed-model>
+    GEMINI_API_KEY=<your-key>
+    GEMINI_MODEL=gemini-3.8-flash
     npm run check:ai
 
 The live AI check is skipped unless explicitly enabled.

@@ -21,6 +21,7 @@ const api = window.legion;
 
 /* Cloud size generated once; lower tiers draw a prefix of it. */
 const CLOUD_TARGET = 14000;
+const WAKE_GREETING_NAME = 'Allen';
 
 const TOOL_CATEGORY_KEY = {
   system: 'allowSystem', apps: 'allowApps', files: 'allowFiles',
@@ -28,6 +29,29 @@ const TOOL_CATEGORY_KEY = {
 };
 
 const PANELS = ['conversation', 'tools', 'memory', 'settings'];
+
+// Synthesis crosses the process boundary. A provider that hangs must not leave
+// the UI in PROCESSING or hold the microphone suspended forever, so every call
+// is bounded independently of the playback watchdog inside AudioEngine.
+const TTS_TIMEOUT_MS = 60000;
+
+function withTimeout(promise, ms, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    Promise.resolve(promise).then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
+function wakePeriod(hour = new Date().getHours()) {
+  return hour < 5 || hour >= 21 ? 'night' : hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening';
+}
+
+function wakeGreeting(hour = new Date().getHours(), name = WAKE_GREETING_NAME) {
+  return `Hey ${name}, good ${wakePeriod(hour)}`;
+}
 
 class Legion {
   constructor() {
@@ -49,9 +73,13 @@ class Legion {
     this.pttActive = false;
     this.micDeviceId = 'default';
     this.pttPromise = null;
+    this._captureGen = 0;
+    this._openCaptureId = null;
+    this._pttOwnsMic = false;
     // The voice surface is held on the instance so a check can substitute it.
     // contextBridge freezes the object on window, so it cannot be patched there.
     this.apiVoice = api.voice;
+    this.apiEvents = api.on;
     this.currentPanel = null;
     this.panelApi = null;
     this.theme = 'legion-dark';
@@ -64,6 +92,15 @@ class Legion {
     this._confirmEl = document.getElementById('confirm');
     this._toastHost = document.getElementById('toasts');
     this._firstRun = null;
+    this._responseSpeech = null;
+    this._activeTurn = null;
+    this._turnSeq = 0;
+    this._speechGen = 0;
+    this._lastWakeGreetingPeriod = null;
+    this._raf = 0;
+    this._statusTimer = null;
+    this._metricsTimer = null;
+    this._dispose = this.dispose.bind(this);
   }
 
   /* ── tiny event bus for panels ───────────────────────────── */
@@ -299,7 +336,8 @@ class Legion {
 
   #loop() {
     const tick = () => {
-      requestAnimationFrame(tick);
+      if (this._disposed) return;
+      this._raf = requestAnimationFrame(tick);
       const now = performance.now();
       const dt = Math.min(0.05, (now - this._last) / 1000);
       this._last = now;
@@ -321,7 +359,7 @@ class Legion {
       }
       this.wave.draw(this.store.state, dt);
     };
-    requestAnimationFrame(tick);
+    this._raf = requestAnimationFrame(tick);
   }
 
   #updateRenderChip(fps) {
@@ -428,8 +466,22 @@ class Legion {
 
     api.on('voice:wake', (p) => this.#onWake(p));
 
-    setInterval(() => this.#paintStatus(), 1500);
-    setInterval(() => this.#pollFullMetrics(), 9000);
+    this._statusTimer = setInterval(() => this.#paintStatus(), 3000);
+    this._metricsTimer = setInterval(() => this.#pollFullMetrics(), 12000);
+    window.addEventListener('beforeunload', this._dispose, { once: true });
+  }
+
+  dispose() {
+    if (this._disposed) return;
+    this._disposed = true;
+    if (this._raf) cancelAnimationFrame(this._raf);
+    if (this._statusTimer) clearInterval(this._statusTimer);
+    if (this._metricsTimer) clearInterval(this._metricsTimer);
+    clearTimeout(this._continuousTimer);
+    this.audio.stopSpeaking();
+    this.audio.stopMic();
+    this.wave.dispose();
+    this.stage?.dispose();
   }
 
   /**
@@ -451,7 +503,28 @@ class Legion {
       this.store.setCaption(command, false);
       this.sendText(command);
     } else {
-      this.#listenOnce({ continuous: true });
+      if (this._wakeGreetingActive) return;
+      const period = wakePeriod();
+      if (this._lastWakeGreetingPeriod === period) {
+        this.#listenOnce({ wakeTurn: true });
+        return;
+      }
+      this._wakeGreetingActive = true;
+      this._lastWakeGreetingPeriod = period;
+      const greeting = wakeGreeting();
+      this.store.setCaption(greeting, false);
+      this.store.setState('SPEAKING', greeting);
+      this.#setChipMic(false);
+      this.speak(greeting).then((r) => {
+        this._wakeGreetingActive = false;
+        if (r?.cancelled) return;
+        if (r && !r.ok) this.toast('warn', 'Greeting audio unavailable', r.error || 'Could not play the wake greeting.');
+        this.#listenOnce({ wakeTurn: true });
+      }).catch((err) => {
+        this._wakeGreetingActive = false;
+        this.toast('warn', 'Greeting audio unavailable', err.message || 'Could not play the wake greeting.');
+        this.#listenOnce({ wakeTurn: true });
+      });
     }
   }
 
@@ -485,9 +558,13 @@ class Legion {
       this.#paintStatus();
       return;
     }
+    const turnEvent = ['delta', 'text-delta', 'text', 'response-chunk', 'tool', 'error'].includes(ev.type);
+    if (turnEvent && !this._activeTurn) return;
     if (ev.type === 'delta' || ev.type === 'text-delta' || ev.type === 'text') {
       this.store.setStreaming(this.store.streaming + (p.text || p.delta || ''));
       this.#paintCaption();
+    } else if (ev.type === 'response-chunk') {
+      this.#queueResponseSpeech(p.text);
     } else if (ev.type === 'tool') {
       if (p.phase === 'start') {
         this.toolLog.unshift({ name: p.name, ok: true, summary: 'running…', at: new Date().toISOString(), ms: 0, risk: p.risk });
@@ -529,7 +606,13 @@ class Legion {
 
   #onTimer(t) {
     this.store.setState('ALERT', t.label);
-    this.speak(t.label).finally(() => this.store.setState('IDLE'));
+    this.speak(t.label)
+      .then((r) => { if (r && !r.ok && !r.cancelled) this.toast('warn', 'Reminder audio unavailable', r.error || 'Could not play the reminder.'); })
+      .catch(() => {})
+      .finally(() => {
+        if (this.store.state === 'ALERT') this.store.setState('IDLE');
+        this.#rearmContinuous();
+      });
     this.toast('info', 'Reminder', t.label);
   }
 
@@ -585,13 +668,19 @@ class Legion {
     // A continuous turn is self-terminating; releasing the key must not abort
     // the next listen, or the mode would stall whenever the user touched Space.
     if (this.continuous && !this._pushingToTalk) return;
-    this.apiVoice.listenStop().catch(() => {});
+    // The tap is torn down here as well as in main: leaving it attached would
+    // keep shipping frames for a session that no longer exists, and main drops
+    // those silently, so the symptom would be a mute microphone with no error.
+    this.#closeCapture();
   }
 
   #releaseMic() {
+    const closeMic = this._pttOwnsMic;
+    this._pttOwnsMic = false;
     this.pttActive = false;
     this._pushingToTalk = false;
     this.#setChipMic(false);
+    if (closeMic && !this.continuous) this.audio.stopMic();
   }
 
   #setChipMic(on) {
@@ -610,41 +699,128 @@ class Legion {
       .catch((err) => this.toast('error', 'Microphone unavailable', err.message));
   }
 
-  async sendText(text) {
+  async simulateVoice(text = 'Hello LEGION', { delayMs = 450 } = {}) {
+    if (this.info?.isDev !== true) {
+      return { ok: false, error: { code: 'E_DEV_ONLY', message: 'Simulated voice is available in development builds only.' } };
+    }
+    const transcript = String(text || '').trim();
+    if (!transcript) {
+      return { ok: false, error: { code: 'E_EMPTY', message: 'A transcript is required.' } };
+    }
+    if (this.busy || this.pttActive || this.continuous) {
+      return { ok: false, error: { code: 'E_BUSY', message: 'Finish the current turn before simulating voice.' } };
+    }
+
+    const micWasActive = this.audio.micActive;
+    this.pttActive = true;
+    this._pushingToTalk = false;
+    this.#setChipMic(true);
+    this.store.setCaption('Listening...', true);
+    this.store.setState('LISTENING');
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(delayMs) || 0)));
+      this.store.setCaption(transcript, false);
+      const started = this.sendText(transcript);
+      if (!started) {
+        return { ok: false, error: { code: 'E_BUSY', message: 'A turn is already running.' } };
+      }
+      return { ok: true, transcript, simulated: true };
+    } finally {
+      this.pttActive = false;
+      this._pushingToTalk = false;
+      this.#setChipMic(micWasActive);
+    }
+  }
+
+  sendText(text) {
     const clean = String(text || '').trim();
-    if (!clean || this.busy) return;
+    if (!clean || this.busy) return false;
+    const turn = ++this._turnSeq;
+    this._activeTurn = turn;
     this.busy = true;
+    this.emit('busy', true);
+    this._responseSpeech = { chain: Promise.resolve(), count: 0, speechError: null };
     this.store.setStreaming('');
     this.store.setState('PROCESSING');
+    this.#runTextTurn(clean, turn);
+    return true;
+  }
 
+  #isCurrentTurn(turn) {
+    return this._activeTurn === turn;
+  }
+
+  async #runTextTurn(clean, turn) {
+    let failed = false;
+    const speech = this._responseSpeech;
     const push = (m) => { this.memory.session.push(m); this.emit('memory:session'); };
     push({ role: 'user', text: clean, at: new Date().toISOString() });
 
     try {
       const res = await api.ai.chat(clean);
+      if (!this.#isCurrentTurn(turn)) return;
       if (!res || !res.ok) {
+        if (res?.error?.code === 'E_ABORTED') {
+          failed = true;
+          this.store.setStreaming('');
+          return;
+        }
         const msg = res?.error?.message || 'The AI provider did not respond.';
+        failed = true;
         push({ role: 'error', text: msg, at: new Date().toISOString() });
-        this.store.setCaption('', false);
+        this.store.setStreaming('');
+        this.store.setCaption(msg, false);
         this.store.setState('ERROR', msg);
         this.toast('error', 'No answer', msg);
-        if (res?.error?.code === 'E_NO_PROVIDER') this.togglePanel('settings');
+        if (['E_NO_PROVIDER', 'E_NO_KEY'].includes(res?.error?.code)) this.togglePanel('settings');
         return;
       }
       const reply = res.text || '';
       push({ role: 'assistant', text: reply, at: new Date().toISOString() });
       this.store.setStreaming('');
       this.store.setCaption(reply, false);
-      await this.speak(reply);
-      this.#rearmContinuous();
+      // The reply is already on screen. Speech is an enhancement from here on,
+      // so its failure is reported as a warning and never erases the answer.
+      try {
+        if (speech?.count) {
+          await speech.chain;
+        } else if (!speech?.cancelled) {
+          const spoken = await this.speak(reply);
+          if (speech && !spoken.ok && !spoken.cancelled && !speech.speechError) {
+            speech.speechError = spoken.error || 'Speech is unavailable.';
+          }
+        }
+      } catch (err) {
+        if (speech && !speech.cancelled && !speech.speechError) {
+          speech.speechError = err.message || 'Speech is unavailable.';
+        }
+      }
+      if (speech?.speechError && !speech.cancelled) {
+        this.toast('warn', 'Voice unavailable', speech.speechError);
+      }
+      if (this.store.state === 'ERROR') failed = true;
     } catch (err) {
+      if (!this.#isCurrentTurn(turn)) return;
+      failed = true;
       this.store.setStreaming('');
       this.store.setState('ERROR', err.message);
       this.toast('error', 'Request failed', err.message);
     } finally {
+      if (!this.#isCurrentTurn(turn)) return;
       this.busy = false;
-      await this.refreshMemory();
-      this.#rearmContinuous();
+      this._activeTurn = null;
+      this._responseSpeech = null;
+      this.emit('busy', false);
+      this.store.setStreaming('');
+      if (!failed) this.#rearmContinuous();
+      // speak() owns the SPEAKING -> IDLE edge and only settles when it still
+      // owns the latest utterance. A reminder or greeting that started during
+      // this turn must not be knocked out of SPEAKING here.
+      if (this.store.state === 'PROCESSING') {
+        this.store.setState('IDLE');
+      }
+      this.refreshMemory().catch(() => {});
     }
   }
 
@@ -657,6 +833,7 @@ class Legion {
    */
   #rearmContinuous() {
     if (!this.continuous || this.busy || this.pttActive) return;
+    if (this.audio.ttsPlaying || this.store.state === 'SPEAKING') return;
     clearTimeout(this._continuousTimer);
     this._continuousTimer = setTimeout(() => {
       if (this.continuous && !this.busy && !this.pttActive) this.#listenOnce({ continuous: true });
@@ -682,7 +859,7 @@ class Legion {
       // with nothing left to drive it back to idle.
       if (this.pttActive) {
         this._pushingToTalk = true;
-        this.apiVoice.listenStop().catch(() => {});
+        this.#closeCapture();
         this.#releaseMic();
       }
       this.audio.stopMic();
@@ -691,23 +868,131 @@ class Legion {
     }
   }
 
-  /** One capture cycle, shared by push to talk and continuous mode. */
-  #listenOnce({ continuous = false } = {}) {
+  /**
+   * One capture, resolved when the recogniser has an answer.
+   *
+   * This replaces the old `voice:listen` call for the microphone path. The
+   * reason is that `voice:listen` opened the Windows default input itself, so
+   * the device the user picked in Settings, and the echo cancellation and noise
+   * suppression asked for alongside it, were both bypassed: the level meter used
+   * the good audio and the recogniser heard the raw one. Tapping the graph the
+   * browser already opened and shipping the samples to main means the audio that
+   * gets transcribed is the audio that was conditioned.
+   *
+   * Main replies out of band on `voice:captureEnd` rather than returning from
+   * this call, because the frame that completes a sentence arrives on a
+   * fire-and-forget channel with nobody left holding a promise.
+   */
+  #openCapture({ maxSeconds = 20, generation = this._captureGen } = {}) {
+    return new Promise((resolve) => {
+      let session = null;
+      let settled = false;
+      let watchdog = null;
+      const cancelled = () => generation !== this._captureGen;
+      const off = this.apiEvents('voice:captureEnd', (payload) => {
+        if (!session || !payload || payload.id !== session.id) return;
+        finish(payload);
+      });
+      const finish = (res) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(watchdog);
+        this.audio.stopTap();
+        if (session && this._openCaptureId === session.id) this._openCaptureId = null;
+        off();
+        resolve(res);
+      };
+      const fail = (message, code) => finish({ ok: false, error: { message, code: code || 'E_STT' } });
+      const abort = (id) => { if (id) this.apiVoice.captureAbort(id).catch(() => {}); };
+
+      (async () => {
+        try {
+          session = await this.apiVoice.captureStart({ maxSeconds });
+        } catch (err) {
+          fail(err.message || 'Capture could not start.');
+          return;
+        }
+        if (!session || !session.ok) {
+          // Keep whatever main said. Replacing a specific code with a generic
+          // one turns a silent room in continuous mode into a red error, which
+          // is exactly the case the code exists to handle quietly.
+          const e = session && session.error;
+          finish({ ok: false, error: { message: (e && e.message) || 'Voice capture could not start.', code: (e && e.code) || 'E_STT' } });
+          return;
+        }
+        this._openCaptureId = session.id;
+        if (cancelled() || !this.pttActive) {
+          abort(session.id);
+          finish({ ok: false, stopped: true, error: { code: 'E_STT_STOPPED', message: 'Capture cancelled.' } });
+          return;
+        }
+        watchdog = setTimeout(() => {
+          abort(session.id);
+          finish({ ok: false, error: { code: 'E_STT_TIMEOUT', message: 'Voice capture stopped before the recogniser answered.' } });
+        }, (maxSeconds + 20) * 1000);
+        try {
+          if (!this.audio.micActive) await this.audio.startMic(this.micDeviceId);
+          if (cancelled() || !this.pttActive) {
+            abort(session.id);
+            finish({ ok: false, stopped: true, error: { code: 'E_STT_STOPPED', message: 'Capture cancelled.' } });
+            return;
+          }
+          const tap = this.audio.startTap((samples, sampleRate) => {
+            this.apiVoice.captureChunk(session.id, samples, sampleRate);
+          }, { frameMs: 20 });
+          if (!tap.ok) {
+            abort(session.id);
+            fail('The microphone could not be attached to the recogniser.');
+          }
+        } catch (err) {
+          abort(session.id);
+          fail(err.message || 'Voice capture failed.');
+        }
+      })();
+    });
+  }
+
+  /** Close an open capture. Safe to call when nothing is running. */
+  #closeCapture() {
+    this._captureGen++;
+    this.audio.stopTap();
+    const id = this._openCaptureId;
+    this._openCaptureId = null;
+    if (id) this.apiVoice.captureStop(id).catch(() => {});
+  }
+
+  /** One capture cycle, shared by push to talk, wake, and continuous mode. */
+  #listenOnce({ continuous = false, wakeTurn = false } = {}) {
     if (this.pttActive || this.busy) return;
+    const generation = ++this._captureGen;
+    const ownsMic = !this.audio.micActive;
+    const persistent = continuous || wakeTurn;
+    this._pttOwnsMic = ownsMic && !continuous;
     this.pttActive = true;
     this.#setChipMic(true);
     this.store.setCaption('Listening…', true);
 
     // Marks a turn the user is holding the key for, so releasing Space stops
-    // the capture. A continuous turn is never key-driven and ends on its own.
-    this._pushingToTalk = !continuous;
+    // the capture. Continuous and wake turns are not key-driven.
+    this._pushingToTalk = !persistent;
 
-    const stopAfterSpeech = () => { if (continuous) { this.pttActive = false; this.#setChipMic(true); } else { this.#releaseMic(); } };
+    const stopAfterSpeech = () => {
+      if (continuous) {
+        this.pttActive = false;
+        this.#setChipMic(true);
+      } else {
+        this.#releaseMic();
+      }
+    };
 
     this.audio.startMic(this.micDeviceId)
       .then(() => {
+        if (generation !== this._captureGen || !this.pttActive) {
+          if (ownsMic && !continuous) this.audio.stopMic();
+          return { ok: false, stopped: true, error: { code: 'E_STT_STOPPED', message: 'Capture cancelled.' } };
+        }
         this.store.setState('LISTENING');
-        return this.apiVoice.listen({ maxSeconds: continuous ? 12 : 20 });
+        return this.#openCapture({ maxSeconds: continuous ? 12 : 20, generation });
       })
       .then((res) => {
         // Continuous mode may have been switched off while this capture was in
@@ -718,17 +1003,16 @@ class Legion {
         if (!res || !res.ok) {
           this.store.setCaption('', false);
           if (res?.stopped) {
-            // A released push to talk. Return quietly unless we are in
-            // continuous mode, where the next turn is already scheduled.
+            // A released push to talk or wake turn that was stopped. Return
+            // quietly unless continuous mode has another turn scheduled.
             if (!continuous) this.store.setState('IDLE');
             this.#rearmContinuous();
             return;
           }
           const code = res?.error?.code;
-          // In continuous mode the microphone is open, so most turns are
-          // silence. Raising an error for an empty room would be noise, and
-          // the toast would repeat every cycle.
-          if (continuous && code === 'E_STT_EMPTY') {
+          // In continuous or wake turns the microphone is open, so most turns
+          // are silence. Raising an error for an empty room would be noise.
+          if (persistent && code === 'E_STT_EMPTY') {
             if (this.store.state === 'LISTENING') this.store.setState('IDLE');
             this.#rearmContinuous();
             return;
@@ -760,34 +1044,115 @@ class Legion {
     const body = String(text || '').trim();
     if (!body) return { ok: false, error: 'Nothing to say.' };
 
-    const res = await api.voice.speak(body, {
-      voice: (opts && opts.voice) || cfg.voiceName || null,
-      rate: (opts && opts.rate) ?? cfg.rate,
-      volume: (opts && opts.volume) ?? cfg.volume
-    });
+    const options = opts || {};
+    const gen = ++this._speechGen;
+    this.audio.stopSpeaking();
+    // The previous request may still own main's suspended wake listener. Release
+    // it before this one starts; release is generation-guarded so a late return
+    // from an older utterance cannot open the microphone during this one.
+    this.#releaseSpeechDevice(gen);
+
+    const wantMock = options.mock === true || cfg.mockTts === true;
+    const fail = (message, extra = {}) => {
+      if (gen !== this._speechGen) return { ok: false, cancelled: true, ...extra };
+      if (this.store.state === 'SPEAKING') this.store.setState('IDLE');
+      this.#releaseSpeechDevice(gen);
+      return { ok: false, error: message, ...extra };
+    };
+
+    let res;
+    try {
+      res = await withTimeout(this.apiVoice.speak(body, {
+        voice: options.voice || cfg.voiceName || null,
+        rate: options.rate ?? cfg.rate,
+        volume: options.volume ?? cfg.volume,
+        mock: wantMock
+      }), TTS_TIMEOUT_MS, 'Speech synthesis timed out.');
+    } catch (err) {
+      if (gen === this._speechGen) {
+        this.audio.stopSpeaking();
+        // Cancel main's in-flight request too. It suspended wake and set
+        // SPEAKING before synthesis; dropping only the renderer promise would
+        // leave both in that state until it eventually finished.
+        try { await this.apiVoice.speechCancel(); } catch (_) { /* already gone */ }
+      }
+      return fail(err.message || 'Speech synthesis failed.');
+    }
+    if (gen !== this._speechGen) return { ok: false, cancelled: true };
     if (!res || !res.ok) {
       const msg = res?.error?.message || 'Speech synthesis failed.';
-      this.store.setState('ERROR', msg);
-      this.#releaseSpeechDevice();
-      return { ok: false, error: msg };
+      return fail(msg, {
+        cancelled: !!res?.cancelled,
+        tier: res?.tier || null,
+        source: res?.source || null
+      });
     }
-    if (!res.audioBase64) { this.#releaseSpeechDevice(); return { ok: true, silent: true }; }
+    if (!res.mock && !res.audioBase64) {
+      // A pack-only miss is normal silence, not a failure. Main released the
+      // device at synthesis time; settle the mirror as well.
+      if (this.store.state === 'SPEAKING') this.store.setState('IDLE');
+      this.#releaseSpeechDevice(gen);
+      return { ok: true, silent: true, tier: res.tier || null, source: res.source || null, mode: res.mode || null };
+    }
 
     this.store.setState('SPEAKING');
-    const play = await this.audio.speak(res.audioBase64);
-    if (!play.ok) {
-      this.store.setState('IDLE');
-      this.#releaseSpeechDevice();
-      return { ok: false, error: 'Could not play the generated audio.' };
+    let play;
+    try {
+      play = res.mock ? await this.audio.speakMock(res.durationMs) : await this.audio.speak(res.audioBase64);
+    } catch (err) {
+      return fail(err.message || 'Could not start speech playback.');
     }
+    if (gen !== this._speechGen) {
+      try { play?.stop?.(); } catch (_) { /* newer speech owns playback */ }
+      return { ok: false, cancelled: true };
+    }
+    if (!play || !play.ok) {
+      return fail('Could not play the generated audio.', { tier: res.tier || null, source: res.source || null });
+    }
+
     this.audio.setMuted(this.config?.voice?.muted === true);
-    await play.promise;
+    const done = await play.promise;
+    if (gen !== this._speechGen) return { ok: false, cancelled: true };
+    if (!done || !done.ok) {
+      return fail(
+        done?.timedOut ? 'Speech playback timed out.' : 'Speech playback did not finish.',
+        { cancelled: !!done?.cancelled, tier: res.tier || null, source: res.source || null }
+      );
+    }
+
     this.audio.stopSpeaking();
     if (this.store.state === 'SPEAKING') this.store.setState('IDLE');
-    this.#releaseSpeechDevice();
+    this.#releaseSpeechDevice(gen);
     // source/phrase are carried through so a caller can tell a recorded pack clip
     // from freshly synthesised speech; the settings panel reports which was used.
-    return { ok: true, durationMs: play.durationMs, source: res.source, pack: res.pack, phrase: res.phrase };
+    return {
+      ok: true,
+      durationMs: done.durationMs || play.durationMs,
+      source: res.source || null,
+      tier: res.tier || null,
+      mode: res.mode || null,
+      mock: !!res.mock,
+      pack: res.pack || null,
+      phrase: res.phrase || null
+    };
+  }
+
+  #queueResponseSpeech(text) {
+    const chunk = String(text || '').trim();
+    const response = this._responseSpeech;
+    if (!chunk || !response) return;
+    response.count++;
+    response.chain = response.chain.then(async () => {
+      if (response.cancelled) return { ok: false, cancelled: true };
+      try {
+        const r = await this.speak(chunk);
+        if (!r.ok && !r.cancelled && !response.speechError) response.speechError = r.error || 'Speech is unavailable.';
+        return r;
+      } catch (err) {
+        if (!response.speechError) response.speechError = err.message || 'Speech is unavailable.';
+        return { ok: false, error: err.message };
+      }
+    });
   }
 
   /**
@@ -803,9 +1168,10 @@ class Legion {
    * recogniser reads the same input device. Playback is renderer-side, so main
    * cannot see it end; this is the signal that hands the device back.
    */
-  #releaseSpeechDevice() {
+  #releaseSpeechDevice(gen) {
+    if (gen !== undefined && gen !== this._speechGen) return;
     Promise.resolve()
-      .then(() => api.voice.speechEnd())
+      .then(() => this.apiVoice.speechEnd())
       .catch(() => {});
   }
 
@@ -882,13 +1248,41 @@ class Legion {
 
   closeTopmost() {
     if (this.pttActive) { this.pushToTalkEnd(); this.#releaseMic(); return true; }
-    if (this.audio.ttsPlaying) { this.audio.stopSpeaking(); this.store.setState('IDLE'); return true; }
-    if (this.busy) { api.ai.cancel().catch(() => {}); this.busy = false; this.store.setState('IDLE'); return true; }
+    if (this.audio.ttsPlaying || this._responseSpeech) {
+      this.#cancelSpeech();
+      if (this.busy) api.ai.cancel().catch(() => {});
+      this.#cancelActiveTurn();
+      this.store.setState('IDLE');
+      return true;
+    }
+    if (this.busy) {
+      api.ai.cancel().catch(() => {});
+      this.#cancelActiveTurn();
+      this.store.setState('IDLE');
+      return true;
+    }
     if (!this._confirmEl.hidden) { this.#settleConfirm(false); return true; }
     if (!document.getElementById('shortcuts').hidden) { this.toggleShortcuts(false); return true; }
     if (this.currentPanel) { this.#openPanel(null); return true; }
     if (this.store.error) { this.store.clearError(); this.store.setState('IDLE'); return true; }
     return false;
+  }
+
+  #cancelSpeech() {
+    this._speechGen++;
+    if (this._responseSpeech) this._responseSpeech.cancelled = true;
+    this._responseSpeech = null;
+    this.audio.stopSpeaking();
+    this.apiVoice.speechCancel().catch(() => {});
+  }
+
+  #cancelActiveTurn() {
+    this._turnSeq++;
+    this._activeTurn = null;
+    this.busy = false;
+    this._responseSpeech = null;
+    this.store.setStreaming('');
+    this.emit('busy', false);
   }
 
   toggleShortcuts(force) {
@@ -979,8 +1373,8 @@ class Legion {
     try {
       const r = await api.ai.probe();
       if (r.provider === 'none') return { ok: false, error: 'No provider selected.' };
-      if (r.online === false) return { ok: false, error: r.reason || 'Provider did not answer.' };
-      if (r.models) return { ok: true, detail: `Online · ${r.models.length} model(s) available.` };
+      if (r.online === false) return { ok: false, error: r.reason || 'Provider is not ready.' };
+      if (r.mock) return { ok: true, detail: 'Development mock. No network request.' };
       return { ok: true, detail: r.keyConfigured ? 'Key present. Ready to answer.' : 'Reachable.' };
     } catch (err) {
       return { ok: false, error: err.message };

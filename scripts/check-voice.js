@@ -26,7 +26,9 @@ const ROOT = path.join(__dirname, '..');
 const stt = require(path.join(ROOT, 'src', 'main', 'voice', 'stt.js'));
 const tts = require(path.join(ROOT, 'src', 'main', 'voice', 'tts.js'));
 const wake = require(path.join(ROOT, 'src', 'main', 'voice', 'wake.js'));
-const { DEFAULTS } = require(path.join(ROOT, 'src', 'main', 'config.js'));
+const pcm = require(path.join(ROOT, 'src', 'main', 'voice', 'pcm.js'));
+const { createVad } = require(path.join(ROOT, 'src', 'main', 'voice', 'vad.js'));
+const { ConfigStore, DEFAULTS } = require(path.join(ROOT, 'src', 'main', 'config.js'));
 const { makeRedactor } = require(path.join(ROOT, 'src', 'main', 'memory.js'));
 
 const results = [];
@@ -57,6 +59,297 @@ function powerShell(script, { timeout = 60000, stdin = null } = {}) {
 }
 
 function words(s) { return String(s).toLowerCase().replace(/[^a-z ]/g, ' ').split(/\s+/).filter(Boolean); }
+
+/** Decode a 16-bit mono PCM WAVE buffer into floats. */
+function decodeWav(buf) {
+  let pos = 12;
+  let fmt = null;
+  let data = null;
+  while (pos + 8 <= buf.length) {
+    const id = buf.toString('ascii', pos, pos + 4);
+    const size = buf.readUInt32LE(pos + 4);
+    const body = pos + 8;
+    if (id === 'fmt ') fmt = { channels: buf.readUInt16LE(body + 2), sampleRate: buf.readUInt32LE(body + 4), bits: buf.readUInt16LE(body + 14) };
+    else if (id === 'data') data = buf.slice(body, Math.min(body + size, buf.length));
+    pos = body + size + (size % 2);
+  }
+  if (!fmt || !data) throw new Error('not a readable WAVE file');
+  const bytes = data.length - (data.length % 2);
+  const out = new Float32Array(bytes / 2);
+  for (let i = 0; i < out.length; i++) out[i] = data.readInt16LE(i * 2) / 32768;
+  return { samples: out, sampleRate: fmt.sampleRate, channels: fmt.channels, bits: fmt.bits };
+}
+
+/** A steady tone, used to prove resampling does not shift pitch. */
+function tone(rate, hz, ms, amp = 0.4) {
+  const n = Math.round((rate * ms) / 1000);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = amp * Math.sin((2 * Math.PI * hz * i) / rate);
+  return out;
+}
+
+/** Count zero crossings to recover the dominant frequency of a mono signal. */
+function dominantHz(samples, rate) {
+  let crossings = 0;
+  for (let i = 1; i < samples.length; i++) if ((samples[i - 1] < 0) !== (samples[i] < 0)) crossings++;
+  return (crossings / 2) * (rate / samples.length);
+}
+
+function silence(rate, ms) { return new Float32Array(Math.round((rate * ms) / 1000)); }
+
+async function checkNewPipeline(speech) {
+  /* ---- 1. capture ownership: a stale stop must not kill the next turn ---- */
+
+  const first = stt.startCapture({ maxSeconds: 30 });
+  const second = stt.startCapture({ maxSeconds: 30 });
+  const firstResult = await first.promise;
+  if (firstResult.stopped && firstResult.error?.code === 'E_STT_STOPPED') {
+    ok('starting a new capture settles the previous one', first.id);
+  } else {
+    bad('starting a new capture settles the previous one', JSON.stringify(firstResult));
+  }
+  const stillSecond = stt.captureStatus();
+  if (stillSecond.active && stillSecond.id === second.id) ok('the new capture survives the previous settlement', second.id);
+  else bad('the new capture survives the previous settlement', JSON.stringify(stillSecond));
+
+  const stoppedOld = stt.stopCapture(first.id);
+  if (stoppedOld === false && stt.captureStatus().active) ok('stopping an old capture id is ignored', first.id);
+  else bad('stopping an old capture id is ignored', `stopCapture returned ${stoppedOld}`);
+
+  const stalePush = await stt.pushCapture(first.id, new Float32Array(480), { sampleRate: 24000 });
+  if (stalePush.ok === false && stt.captureStatus().active) ok('chunks for an old capture are ignored', first.id);
+  else bad('chunks for an old capture are ignored', JSON.stringify(stalePush));
+
+  const stoppedSecond = stt.stopCapture(second.id);
+  const secondResult = await second.promise;
+  if (stoppedSecond === true && secondResult.stopped) ok('an id-scoped stop releases the matching capture', second.id);
+  else bad('an id-scoped stop releases the matching capture', JSON.stringify(secondResult));
+
+  /* ---- 2. PCM: the resampler is where a wrong answer looks like bad audio ---- */
+
+  const tone48 = tone(48000, 1000, 200);
+  const down48 = pcm.resample(tone48, 48000, pcm.TARGET_RATE);
+  const hz48 = dominantHz(down48, pcm.TARGET_RATE);
+  // A naive implementation rounds the decimation step: 48000/16000 is exactly 3
+  // and passes, but 24000/16000 is 1.5, rounds to 2, and yields 12kHz audio
+  // labelled 16kHz. That defect produced 4/9 word recall on a real sentence, so
+  // both ratios are pinned here.
+  if (Math.abs(hz48 - 1000) < 25) ok('48kHz resampling preserves pitch', `${hz48.toFixed(1)}Hz kept`);
+  else bad('48kHz resampling preserves pitch', `1000Hz became ${hz48.toFixed(1)}Hz`);
+
+  const tone24 = tone(24000, 1000, 200);
+  const down24 = pcm.resample(tone24, 24000, pcm.TARGET_RATE);
+  const hz24 = dominantHz(down24, pcm.TARGET_RATE);
+  if (Math.abs(hz24 - 1000) < 25) ok('24kHz resampling preserves pitch (non-integer ratio)', `${hz24.toFixed(1)}Hz kept`);
+  else bad('24kHz resampling preserves pitch (non-integer ratio)', `1000Hz became ${hz24.toFixed(1)}Hz, a naive decimation step`);
+
+  const expectedLen = Math.round((tone24.length / 24000) * 16000);
+  if (Math.abs(down24.length - expectedLen) <= 2) ok('resampled length matches the target rate', `${down24.length} samples for 200ms`);
+  else bad('resampled length matches the target rate', `${down24.length} samples, expected about ${expectedLen}`);
+
+  const wavOut = pcm.encodeWav(pcm.resample(tone24, 24000, pcm.TARGET_RATE), pcm.TARGET_RATE);
+  const back = decodeWav(wavOut);
+  if (back.sampleRate === 16000 && back.bits === 16 && back.channels === 1) {
+    ok('WAV writer emits 16-bit mono at the target rate', `${back.sampleRate}Hz, ${back.bits}-bit, ${back.channels}ch`);
+  } else {
+    bad('WAV writer emits 16-bit mono at the target rate', JSON.stringify(back && { sampleRate: back.sampleRate, bits: back.bits, channels: back.channels }));
+  }
+
+  /* ---- 3. VAD: segmentation decides what the recogniser is asked about ---- */
+
+  const vad = createVad({ sampleRate: pcm.TARGET_RATE, frameMs: 20 });
+  for (let i = 0; i < 25; i++) vad.push(silence(pcm.TARGET_RATE, 20));
+  const quietFloor = vad.status().floor;
+  if (quietFloor >= 0 && quietFloor < 0.01) ok('VAD lowers its floor in a quiet room', `floor ${quietFloor.toFixed(5)}`);
+  else bad('VAD lowers its floor in a quiet room', `floor ${quietFloor}`);
+
+  // A loud transient must not become a segment. speech-start is deliberately
+  // provisional -- it fires after ~60ms so the leading consonant is not lost --
+  // and minSpeechMs is what finally rejects a bang, so the thing to assert is
+  // that no audio comes out the other end.
+  const vad2 = createVad({ sampleRate: pcm.TARGET_RATE, frameMs: 20 });
+  for (let i = 0; i < 25; i++) vad2.push(silence(pcm.TARGET_RATE, 20));
+  const slamEvents = [];
+  for (let i = 0; i < 8; i++) slamEvents.push(...vad2.push(tone(pcm.TARGET_RATE, 300, 20, 0.9)));
+  for (let i = 0; i < 60; i++) slamEvents.push(...vad2.push(silence(pcm.TARGET_RATE, 20)));
+  const slamEnded = slamEvents.find((e) => e.type === 'speech-end' && e.pcm && e.pcm.length > 0);
+  if (!slamEnded) ok('a door slam is rejected, not transcribed', 'no segment survived the minimum-speech test');
+  else bad('a door slam is rejected, not transcribed', `a 160ms transient produced ${slamEnded.pcm.length} samples`);
+
+  // Sustained speech must open, and the closing silence must close it with the
+  // audio in between attached.
+  const vad3 = createVad({ sampleRate: pcm.TARGET_RATE, frameMs: 20 });
+  for (let i = 0; i < 25; i++) vad3.push(silence(pcm.TARGET_RATE, 20));
+  let started = null;
+  let ended = null;
+  const speechRun = tone(pcm.TARGET_RATE, 220, 900, 0.3);
+  for (let off = 0; off < speechRun.length; off += 320) {
+    for (const ev of vad3.push(speechRun.subarray(off, Math.min(off + 320, speechRun.length)))) {
+      if (ev.type === 'speech-start') started = ev;
+      if (ev.type === 'speech-end') ended = ev;
+    }
+  }
+  if (started) ok('sustained speech opens a segment', `threshold ${Number(started.threshold).toFixed(4)} over floor ${Number(started.floor).toFixed(4)}`);
+  else bad('sustained speech opens a segment', 'no speech-start event');
+
+  for (let i = 0; i < 80 && !ended; i++) for (const ev of vad3.push(silence(pcm.TARGET_RATE, 20))) if (ev.type === 'speech-end') ended = ev;
+  if (ended && ended.pcm && ended.pcm.length > 0) ok('trailing silence closes the segment with audio attached', `${ended.pcm.length} samples, ${ended.durationMs}ms`);
+  else bad('trailing silence closes the segment with audio attached', ended ? 'no samples in the event' : 'the segment never closed');
+
+  // A pause inside one thought must split it into two, because the recogniser
+  // only ever sees one segment at a time.
+  const vad4 = createVad({ sampleRate: pcm.TARGET_RATE, frameMs: 20 });
+  for (let i = 0; i < 25; i++) vad4.push(silence(pcm.TARGET_RATE, 20));
+  let ends = 0;
+  const pushAll = (sig) => { for (let off = 0; off < sig.length; off += 320) for (const ev of vad4.push(sig.subarray(off, Math.min(off + 320, sig.length)))) if (ev.type === 'speech-end') ends++; };
+  pushAll(tone(pcm.TARGET_RATE, 220, 700, 0.3));
+  pushAll(silence(pcm.TARGET_RATE, 1500));
+  pushAll(tone(pcm.TARGET_RATE, 220, 700, 0.3));
+  pushAll(silence(pcm.TARGET_RATE, 1500));
+  if (ends === 2) ok('a long pause splits one thought into two', '2 segments');
+  else bad('a long pause splits one thought into two', `${ends} segments`);
+
+  /* ---- 4. end to end: renderer frames in, words out ---- */
+
+  if (!speech || !speech.audio) {
+    skip('a renderer-fed capture is transcribed', 'no synthesised audio available');
+    return;
+  }
+  const decoded = decodeWav(speech.audio);
+  if (decoded.sampleRate === 24000 && decoded.channels === 1) {
+    ok('the capture feed matches the shape the renderer sends', `${decoded.sampleRate}Hz mono, ${decoded.samples.length} samples`);
+  } else {
+    bad('the capture feed matches the shape the renderer sends', JSON.stringify({ sampleRate: decoded.sampleRate, channels: decoded.channels }));
+  }
+
+  // A transcription that finishes after a new capture has opened must not close
+  // that new capture. Feed one whole utterance plus enough silence to trip the
+  // VAD, then replace the session while the recogniser is still working.
+  const stale = stt.startCapture({ maxSeconds: 20, firstSpeechMs: 20000, engine: 'auto' });
+  const speechWithTail = new Float32Array(decoded.samples.length + 24000 * 2);
+  speechWithTail.set(decoded.samples, 0);
+  const pending = stt.pushCapture(stale.id, speechWithTail, { sampleRate: 24000 });
+  const replacement = stt.startCapture({ maxSeconds: 20, firstSpeechMs: 20000, engine: 'auto' });
+  const late = await pending;
+  if (late.ok === false && late.stale === true) ok('a late transcription cannot close a newer capture', stale.id);
+  else bad('a late transcription cannot close a newer capture', JSON.stringify(late));
+  const afterLate = stt.captureStatus();
+  if (afterLate.active && afterLate.id === replacement.id) ok('the replacement capture survives the late result', replacement.id);
+  else bad('the replacement capture survives the late result', JSON.stringify(afterLate));
+  stt.stopCapture(replacement.id);
+  await replacement.promise;
+
+  // Feed the audio in 20ms frames at its native 24kHz, exactly as the renderer's
+  // ScriptProcessorNode would, so the test covers the resample, the VAD, the WAV
+  // writer and the real recogniser rather than a shortcut around them.
+  const session = stt.startCapture({ maxSeconds: 14, engine: 'auto' });
+  const frameLen = Math.round(24000 * 0.02);
+  for (let off = 0; off + frameLen <= decoded.samples.length; off += frameLen) {
+    const frame = decoded.samples.subarray(off, off + frameLen);
+    await stt.pushCapture(session.id, new Float32Array(frame), { sampleRate: 24000 });
+  }
+  // Tail of silence so the VAD is given the chance to close the segment.
+  for (let i = 0; i < 90; i++) await stt.pushCapture(session.id, new Float32Array(480), { sampleRate: 24000 });
+
+  let final = null;
+  try {
+    final = await Promise.race([session.promise, new Promise((r) => setTimeout(() => r(null), 25000))]);
+  } catch (_) { final = null; }
+
+  if (final && final.ok && final.transcript) {
+    const heard = String(final.transcript).toLowerCase();
+    const words = PHRASE.toLowerCase().split(' ');
+    const hit = words.filter((w) => heard.includes(w)).length;
+    ok('a renderer-fed capture is transcribed end to end', `${hit}/${words.length} words, engine=${final.engine}, heard "${final.transcript}"`);
+    if (hit === words.length) ok('the capture pipeline loses no words', `${hit}/${words.length}`);
+    else bad('the capture pipeline loses no words', `${hit}/${words.length} — resampling or segmentation is losing audio`);
+  } else if (final && final.stopped) {
+    bad('a renderer-fed capture is transcribed end to end', 'the session stopped before it recognised anything');
+  } else {
+    bad('a renderer-fed capture is transcribed end to end', final ? (final.error && final.error.message) || 'no transcript' : 'timed out with no result');
+  }
+  if (!stt.captureStatus().active) ok('the capture session is closed after use', 'no session left holding the microphone');
+  else { stt.stopCapture(); bad('the capture session is closed after use', 'a session was still open'); }
+
+  /* ---- 5. the bridge actually carries the new channels ---- */
+
+  const preloadSrc = fs.readFileSync(path.join(ROOT, 'src', 'preload', 'preload.js'), 'utf8');
+  const captureChannels = ['voice:captureStart', 'voice:captureChunk', 'voice:captureStop', 'voice:captureAbort'];
+  const notExposed = captureChannels.filter((c) => !preloadSrc.includes(`'${c}'`));
+  if (notExposed.length === 0) ok('the capture channels are exposed on the bridge', captureChannels.length + ' channels allowlisted');
+  else bad('the capture channels are exposed on the bridge', `missing: ${notExposed.join(', ')}`);
+
+  // The renderer must receive the result out of band, because the frame that
+  // finishes a sentence has no caller waiting on it.
+  if (preloadSrc.includes("'voice:captureEnd'")) ok('capture completion is announced to the renderer', 'voice:captureEnd subscribed');
+  else bad('capture completion is announced to the renderer', 'no voice:captureEnd channel, so a capture can never resolve');
+
+  // The wake listener and a capture share one input device, and System.Speech
+  // allows a single engine per device. Two structural defects made that
+  // arbitration leak, and neither is observable without a real microphone, so
+  // they are pinned on the source.
+  const wakeSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'voice', 'wake.js'), 'utf8');
+  const spawnBody = wakeSrc.slice(wakeSrc.indexOf('function spawnListener'), wakeSrc.indexOf('function wanted'));
+  if (/if \(suspended > 0\) return false;/.test(spawnBody)) {
+    ok('a pending wake restart cannot steal a held device', 'spawnListener refuses while suspended');
+  } else {
+    bad('a pending wake restart cannot steal a held device', 'spawnListener will start even while suspended, colliding with an open capture');
+  }
+
+  const exitStart = wakeSrc.indexOf("child.on('exit'");
+  const exitBody = exitStart === -1 ? '' : wakeSrc.slice(exitStart, wakeSrc.indexOf('function wanted'));
+  if (/const wasSuspended = own\.suspend/.test(exitBody)) {
+    ok('an intentional suspend is not counted as a crash', 'the exit handler reads the exiting child, not the cleared session');
+  } else {
+    bad('an intentional suspend is not counted as a crash', 'the exit handler reads the module session, which teardown has already cleared');
+  }
+
+  const resumeBody = wakeSrc.slice(wakeSrc.indexOf('function resume'), wakeSrc.indexOf('function status'));
+  if (!/restarts\s*=\s*0/.test(resumeBody)) ok('continuous mode cannot keep restarting a dead listener', 'resume() leaves the restart budget alone');
+  else bad('continuous mode cannot keep restarting a dead listener', 'resume() clears the restart budget, so a crash loop never reaches its limit');
+
+  if (/HIT_COOLDOWN_MS/.test(wakeSrc)) ok('a wake hit is not fired twice for one utterance', 'a cooldown guards repeat matches');
+  else bad('a wake hit is not fired twice for one utterance', 'no cooldown between hits');
+
+  const appSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'js', 'app.js'), 'utf8');
+  const mainVoiceSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'main.js'), 'utf8');
+  if (/hour < 5 \|\| hour >= 21 \? 'night'/.test(appSrc) && /hour < 12 \? 'morning'/.test(appSrc) && /hour < 17 \? 'afternoon'/.test(appSrc)) {
+    ok('wake greetings distinguish all four time periods', 'night / morning / afternoon / evening');
+  } else {
+    bad('wake greetings distinguish all four time periods', 'time period boundaries are incomplete');
+  }
+  if (/_lastWakeGreetingPeriod/.test(appSrc) && /if \(this\._lastWakeGreetingPeriod === period\)/.test(appSrc)) {
+    ok('wake greetings are suppressed within one time period', 'period state prevents repeats');
+  } else {
+    bad('wake greetings are suppressed within one time period', 'no relevant-period guard');
+  }
+
+  if (/function endCaptureSession\(id, res\)/.test(mainVoiceSrc) && /prev\.id !== id/.test(mainVoiceSrc)) {
+    ok('capture completion is matched to its own session', 'a late result cannot close a newer capture');
+  } else {
+    bad('capture completion is matched to its own session', 'endCaptureSession still closes whatever session is current');
+  }
+  if (/stt\.stopCapture\(target \|\| undefined\)/.test(mainVoiceSrc)) {
+    ok('capture stop and abort are id-scoped', 'main will not stop another window\'s session');
+  } else {
+    bad('capture stop and abort are id-scoped', 'main still calls the global capture stop');
+  }
+  if (/payload\.id !== session\.id/.test(appSrc) && /generation !== this\._captureGen/.test(appSrc)) {
+    ok('renderer ignores stale capture events', 'completion is matched by id and generation');
+  } else {
+    bad('renderer ignores stale capture events', 'a stale completion or cancelled capture can settle a newer turn');
+  }
+  if (/watchdog = setTimeout\(/.test(appSrc) && /E_STT_TIMEOUT/.test(appSrc) && /captureAbort/.test(appSrc)) {
+    ok('renderer has a watchdog for a silent main process', 'a stuck capture is aborted and surfaced');
+  } else {
+    bad('renderer has a watchdog for a silent main process', 'no local timeout if voice:captureEnd never arrives');
+  }
+  if (/async simulateVoice\(/.test(appSrc) && /this\.info\?\.isDev !== true/.test(appSrc)) {
+    ok('simulated voice is development-only', 'the renderer refuses it outside dev builds');
+  } else {
+    bad('simulated voice is development-only', 'no dev guard around simulateVoice');
+  }
+}
 
 (async () => {
   console.log('VOICE PIPELINE CHECK');
@@ -98,6 +391,55 @@ function words(s) { return String(s).toLowerCase().replace(/[^a-z ]/g, ' ').spli
       ok('pack-only returns silence for an unrecorded phrase', r.reason || 'no clip');
     } else {
       bad('pack-only returns silence for an unrecorded phrase', JSON.stringify({ tier: r && r.tier, source: r && r.source, bytes: r && r.bytes, error: r && r.error }));
+    }
+  }
+
+  // The development tier is a real, valid WAV rather than a stub object. It is
+  // deliberately requested with a recorded phrase to prove it wins over the pack
+  // when a check asks for it by name.
+  {
+    const r = await tts.synthesize('yes', { mock: true, ttsMode: 'pack-only' }).catch((e) => ({ error: e.message }));
+    const wav = r && r.audio;
+    const frames = wav && wav.length >= 44 ? wav.readUInt32LE(40) / 2 : 0;
+    const shaped = wav &&
+      wav.toString('ascii', 0, 4) === 'RIFF' &&
+      wav.toString('ascii', 8, 12) === 'WAVE' &&
+      wav.readUInt16LE(20) === 1 &&
+      wav.readUInt16LE(22) === 1 &&
+      wav.readUInt32LE(24) === 24000 &&
+      wav.readUInt16LE(34) === 16 &&
+      wav.readUInt32LE(40) === frames * 2;
+    if (r && r.tier === 'mock' && r.source === 'mock' && r.mock === true && r.format === 'wav' && shaped &&
+        r.durationMs >= 700 && r.durationMs <= 2400 && r.bytes === wav.length) {
+      ok('the development tier returns a valid silent WAV', `${r.bytes} bytes, ${r.durationMs}ms`);
+    } else {
+      bad('the development tier returns a valid silent WAV', JSON.stringify({ tier: r && r.tier, source: r && r.source, mock: r && r.mock, bytes: r && r.bytes, error: r && r.error }));
+    }
+  }
+
+  // The mock voice is a development setting. A production profile must erase it
+  // on load and on every patch, not merely hide the checkbox that writes it.
+  {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'legion-tts-config-'));
+    const prodDir = path.join(base, 'prod');
+    const devDir = path.join(base, 'dev');
+    fs.mkdirSync(prodDir, { recursive: true });
+    fs.mkdirSync(devDir, { recursive: true });
+    fs.writeFileSync(path.join(prodDir, 'settings.json'), JSON.stringify({ voice: { mockTts: true } }), 'utf8');
+    fs.writeFileSync(path.join(devDir, 'settings.json'), JSON.stringify({ voice: { mockTts: true } }), 'utf8');
+    const prod = new ConfigStore(prodDir, { allowMock: false });
+    const dev = new ConfigStore(devDir, { allowMock: true });
+    const loadedOff = prod.get().voice.mockTts === false;
+    const devKept = dev.get().voice.mockTts === true;
+    prod.patch({ voice: { mockTts: true } });
+    const patchOff = prod.get().voice.mockTts === false;
+    if (prod._writeTimer) clearTimeout(prod._writeTimer);
+    if (dev._writeTimer) clearTimeout(dev._writeTimer);
+    fs.rmSync(base, { recursive: true, force: true });
+    if (DEFAULTS.voice.mockTts === false && loadedOff && patchOff && devKept) {
+      ok('mock speech is development-only', 'default false, removed on production load and patch, kept in dev');
+    } else {
+      bad('mock speech is development-only', JSON.stringify({ default: DEFAULTS.voice.mockTts, loadedOff, patchOff, devKept }));
     }
   }
 
@@ -381,9 +723,33 @@ $engine.Dispose()
 
   // Every key the interface offers must exist in the config the app saves, and
   // the removed ones must be gone rather than lingering as unread defaults.
-  const staleVoice = ['speakerDeviceId', 'pitch', 'sttEngine', 'whisperModelPath'].filter((k) => k in DEFAULTS.voice);
-  if (staleVoice.length === 0) ok('unsupported voice keys are gone from the config', 'speakerDeviceId, pitch, sttEngine, whisperModelPath all removed');
+  // sttEngine left this list when a second recogniser actually arrived and the
+  // key gained a real reader; presence alone proves nothing, so the next block
+  // asserts it is consumed.
+  const staleVoice = ['speakerDeviceId', 'pitch', 'whisperModelPath'].filter((k) => k in DEFAULTS.voice);
+  if (staleVoice.length === 0) ok('unsupported voice keys are gone from the config', 'speakerDeviceId, pitch, whisperModelPath all removed');
   else bad('unsupported voice keys are gone from the config', staleVoice.join(', '));
+
+  // A setting that exists but is never read is worse than no setting: the
+  // interface promises something the app does not do. Every recogniser-related
+  // key must be consumed by the main process.
+  const mainConfigSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'main.js'), 'utf8');
+  const recogniserKeys = ['sttEngine', 'whisperPath', 'whisperModel', 'whisperLanguage', 'speechSilenceMs', 'speechMaxSeconds'];
+  const unreadKeys = recogniserKeys.filter((k) => {
+    if (!(k in DEFAULTS.voice)) return true;
+    return !new RegExp(`\\.${k}\\b`).test(mainConfigSrc);
+  });
+  if (unreadKeys.length === 0) ok('recogniser settings are genuinely read', `${recogniserKeys.length} keys consumed by main`);
+  else bad('recogniser settings are genuinely read', `unread or missing: ${unreadKeys.join(', ')}`);
+
+  // The microphone constraints are a requirement, not a preference: the fallback
+  // path once asked for { audio: true }, which silently dropped all four.
+  const audioSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'js', 'audio.js'), 'utf8');
+  if (!/getUserMedia\(\s*\{\s*audio:\s*true/.test(audioSrc)) {
+    ok('the microphone fallback keeps audio processing', 'no bare { audio: true } request');
+  } else {
+    bad('the microphone fallback keeps audio processing', 'a bare { audio: true } request drops echo cancellation, noise suppression and automatic gain');
+  }
 
   if (!('telemetry' in DEFAULTS.privacy)) ok('the unused telemetry key is gone', 'no switch for a collection path that never existed');
   else bad('the unused telemetry key is gone', 'privacy.telemetry still present');
@@ -399,6 +765,8 @@ $engine.Dispose()
   const untouched = ['showWaveform', 'redactSecrets'].filter((k) => !new RegExp(k).test(allJson));
   if (untouched.length === 0) ok('showWaveform and redactSecrets are read by the application', 'both settings have a consumer');
   else bad('showWaveform and redactSecrets are read by the application', `no reference to ${untouched.join(', ')}`);
+
+  await checkNewPipeline(speech);
 })().then(() => {
   const failed = results.filter((r) => !r.ok).length;
   console.log(`\n${failed === 0 && !skipped ? 'all voice checks passed' : skipped && failed === 0 ? 'voice checks passed (some skipped)' : `${failed} voice check(s) failed`}`);

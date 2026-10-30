@@ -14,9 +14,9 @@ The automated check suite is the source of truth for repeatable verification.
 - [x] Voice-pack manifest, exact phrase matching, traversal guard and settings integration
 - [x] Piper runtime discovery in development and packaged-resource discovery in production
 - [x] Provider-independent AI engine
-- [x] OpenAI/Anthropic/Ollama provider adapters
-- [x] Ollama NDJSON streaming through the existing ai:event channel
-- [x] Automatic local Ollama detection when no provider is configured
+- [x] Gemini/OpenAI/Anthropic provider adapters
+- [x] Gemini SSE streaming through the existing ai:event channel
+- [x] Explicit provider selection with typed missing-key and no-provider errors
 - [x] Renderer live streaming state connected to provider deltas
 - [x] Final AI reply routed through the existing hybrid TTS path
 - [x] Tool catalogue, confirmation gate and sandbox policy
@@ -37,7 +37,7 @@ The automated check suite is the source of truth for repeatable verification.
 - [x] Voice pack is included in the app and copied to editable resources/voicepack
 - [x] Piper resource directory is configured for packaged builds
 - [x] check:package statically validates package contents and can skip only an OS-level unsigned-binary launch block when explicitly requested
-- [~] Live Ollama turn — source path and opt-in check are implemented; requires Ollama + a local model
+- [~] Live Gemini turn — source path and opt-in check are implemented; requires GEMINI_API_KEY
 - [~] Piper runtime — source path and packaging are implemented; requires a compatible piper.exe + ONNX model
 - [~] NSIS installer runtime verification — Windows signing/policy can block execution of unsigned self-built artifacts
 - [~] Code signing — requires a release certificate and signing environment
@@ -80,8 +80,9 @@ The repository is intentionally self-contained at source level. Optional Piper b
     npm run dist
     npm run bench
 
-For live Ollama verification:
+For live Gemini verification:
 
     LEGION_LIVE_AI=1
-    LEGION_OLLAMA_MODEL=<installed-model>
+    GEMINI_API_KEY=<your-key>
+    GEMINI_MODEL=gemini-3.8-flash
     npm run check:ai

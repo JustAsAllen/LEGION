@@ -49,6 +49,13 @@
 
   <!-- ── centre readout ───────────────────────────────────────── -->
   <div id="centre" class="centre">
+    <div class="core-shell" aria-hidden="true">
+      <div class="core-orbit orbit-a"></div>
+      <div class="core-orbit orbit-b"></div>
+      <div class="core-node node-a"></div>
+      <div class="core-node node-b"></div>
+      <div class="core-node node-c"></div>
+    </div>
     <div class="state-line">
       <span id="state-label" class="state-label">BOOTING</span>
       <span id="state-detail" class="state-detail"></span>
@@ -183,14 +190,14 @@
           <h2>Choose an AI provider</h2>
           <p class="fr-note">LEGION talks to whichever provider you select. You can change this at any time.</p>
           <div class="fr-options" id="fr-providers">
+            <button class="fr-option is-selected" data-provider="gemini">
+              <strong>Gemini</strong><span>Google models - requires an API key</span>
+            </button>
             <button class="fr-option" data-provider="anthropic">
-              <strong>Anthropic</strong><span>Claude models · requires an API key</span>
+              <strong>Anthropic</strong><span>Claude models - requires an API key</span>
             </button>
             <button class="fr-option" data-provider="openai">
-              <strong>OpenAI</strong><span>GPT models · requires an API key</span>
-            </button>
-            <button class="fr-option" data-provider="ollama">
-              <strong>Ollama</strong><span>Local models · no key, runs on this machine</span>
+              <strong>OpenAI</strong><span>GPT models - requires an API key</span>
             </button>
             <button class="fr-option" data-provider="none">
               <strong>None yet</strong><span>Start with the interface and system tools only</span>
@@ -209,7 +216,7 @@
           <div class="fr-key-status" id="fr-key-status">No key stored.</div>
           <label class="fr-field" id="fr-url-field" hidden>
             <span>Base URL</span>
-            <input type="text" id="fr-url" placeholder="http://127.0.0.1:11434" spellcheck="false" />
+            <input type="text" id="fr-url" placeholder="https://generativelanguage.googleapis.com/v1beta" spellcheck="false" />
           </label>
           <div class="fr-probe" id="fr-probe"></div>
         </section>

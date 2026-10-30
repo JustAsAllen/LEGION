@@ -5,6 +5,7 @@
 
 const os = require('os');
 const path = require('path');
+const fs = require('fs');
 
 const ROOT = path.join(__dirname, '..');
 // Use a scratch userData so the run never touches real settings or history.
@@ -111,7 +112,8 @@ const check = async (label, fn) => {
     const { ProductivityStore } = require(path.join(ROOT, 'src/main/tools/productivity.js'));
     const productivity = new ProductivityStore(path.join(USER_DATA, 'productivity.json'));
     const si = require(path.join(ROOT, 'src/main/system/metrics.js'));
-    const tm = new ToolManager({ settings: config, secrets: secretStore, shell, memory, productivity, si, onConfirm: () => {} });
+    let confirmation = null;
+    const tm = new ToolManager({ settings: config, secrets: secretStore, shell, memory, productivity, si, onConfirm: (req) => { confirmation = req; } });
 
     // The registry is the real catalogue; list() only reports enablement.
     const reg = tm.registry.list();
@@ -136,6 +138,21 @@ const check = async (label, fn) => {
     // A read-only tool must actually run.
     const fullStatus = await tm.execute('system_full_status', {});
     ok('system_full_status ran', JSON.stringify(fullStatus).slice(0, 90));
+
+    config.patch({ tools: { fileRoots: [USER_DATA] } });
+    tm.syncSandbox();
+    const guardedFile = path.join(USER_DATA, 'tool-policy-check.txt');
+    fs.writeFileSync(guardedFile, 'before', 'utf8');
+    const write = tm.execute('files_write', { path: guardedFile, content: 'after' });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    if (!confirmation || !confirmation.token) throw new Error('files_write overwrite did not request confirmation');
+    tm.resolveConfirmation(confirmation.token, true);
+    const written = await write;
+    if (!written.auditId || written.result.overwritten !== true || fs.readFileSync(guardedFile, 'utf8') !== 'after') {
+      throw new Error('confirmed overwrite did not return an audited structured result');
+    }
+    ok('overwrites require confirmation and return audit metadata', written.auditId);
+    fs.rmSync(guardedFile, { force: true });
 
     // Dev tools must stay locked while tools.allowDev is false.
     try {

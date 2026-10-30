@@ -18,6 +18,7 @@ const QUALITY_TIERS = {
   ultra:  { instances: 10000, size: 0.30, energyScale: 1.0 }
 };
 const TIER_ORDER = ['low', 'medium', 'high', 'ultra'];
+const LOGO_SCALE = 1.18;
 
 const PALETTE = {
   base:    new THREE.Color(0.58, 0.74, 0.96),
@@ -157,19 +158,22 @@ export class LogoStage {
     this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(w, h, false);
     this.field.uniforms.uPixelRatio.value = dpr;
-    // Keep the mark in a square projection. The window may be widescreen, but the
-    // ring must retain equal X/Y scale instead of inheriting the viewport ratio.
-    this.camera.aspect = 1;
+    // Match the perspective projection to the drawing buffer. This compensates
+    // for the canvas being stretched across widescreen layouts, keeping radial
+    // geometry circular instead of turning it into an oval.
+    const aspect = this.renderer.domElement.width / this.renderer.domElement.height;
+    this.viewportAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
+    this.camera.aspect = this.viewportAspect;
     this.camera.updateProjectionMatrix();
     this._fit();
   }
 
   _fit() {
     const fov = this.camera.fov * Math.PI / 180;
-    // Fit against the vertical viewport; the square projection preserves the
-    // same circular geometry at 16:9, 4:3 and square window sizes.
+    // Fit against the vertical viewport; the camera aspect correction preserves
+    // the same circular geometry at 16:9, 4:3 and square window sizes.
     const needH = 32;
-    const dist = needH / (2 * Math.tan(fov / 2));
+    const dist = needH / (2 * Math.tan(fov / 2) * LOGO_SCALE);
     this.baseDistance = dist;
     this.lookTarget.set(0, 0, 0);
   }
@@ -273,6 +277,8 @@ export class LogoStage {
   setAccent(hex, glow) {
     this.themeAccent.set(hex || '#28e0c8');
     this.themeGlow = glow === undefined || glow === null ? 1 : Math.max(0.3, Math.min(1.8, Number(glow) || 1));
+    this.accentLive.copy(this.themeAccent);
+    this.accentTarget.copy(this.themeAccent);
     this._retargetAccent();
     return this.themeAccent;
   }

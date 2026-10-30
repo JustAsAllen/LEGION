@@ -20,9 +20,10 @@ const INVOKE_CHANNELS = [
   'ai:status', 'ai:probe', 'ai:chat', 'ai:cancel', 'ai:profile',
   'memory:summary', 'memory:session', 'memory:list', 'memory:remember',
   'memory:forget', 'memory:clearSession', 'memory:clearAll', 'memory:export',
-  'tools:list', 'tools:invoke', 'tools:confirm',
-  'voice:voices', 'voice:speak', 'voice:speechEnd', 'voice:listen', 'voice:listenStop', 'voice:capabilities', 'voice:pipeline', 'voice:pack',
+  'tools:list', 'tools:audit', 'tools:invoke', 'tools:confirm',
+  'voice:voices', 'voice:speak', 'voice:speechEnd', 'voice:speechCancel', 'voice:listen', 'voice:listenStop', 'voice:capabilities', 'voice:pipeline', 'voice:pack',
   'voice:wakeStart', 'voice:wakeStop', 'voice:wakeStatus',
+  'voice:captureStart', 'voice:captureChunk', 'voice:captureStop', 'voice:captureAbort',
   'system:full', 'shell:showItem', 'shell:openPath',
   'dialog:confirm', 'app:openExternal'
 ];
@@ -30,8 +31,28 @@ const INVOKE_CHANNELS = [
 const EVENT_CHANNELS = [
   'state', 'metrics', 'ai:event', 'tool:confirmation',
   'timer:fired', 'app:ready', 'window:focus', 'ui:open-panel', 'shortcut:activate',
-  'voice:wake'
+  'voice:wake', 'voice:captureEnd'
 ];
+
+/**
+ * Fire-and-forget channels, kept separate from `invoke` because they have no
+ * reply and fire far too often to want one.
+ *
+ * Audio is the only high-rate channel in the app: a 20ms frame is 50 messages a
+ * second for the whole time someone is speaking. Going through `invoke` would
+ * allocate a promise per frame and resolve fifty of them a second for no
+ * benefit. The payload is a Float32Array, which crosses the bridge as a typed
+ * array by structured clone, so the samples are not base64-expanded and do not
+ * show up as garbage strings in a log.
+ */
+const SEND_CHANNELS = [
+  'voice:captureChunk'
+];
+
+const send = {};
+for (const ch of SEND_CHANNELS) {
+  send[ch] = (...args) => ipcRenderer.send(ch, ...args);
+}
 
 const invoke = {};
 for (const ch of INVOKE_CHANNELS) {
@@ -105,6 +126,7 @@ contextBridge.exposeInMainWorld('legion', {
   },
   tools: {
     list: invoke['tools:list'],
+    audit: invoke['tools:audit'],
     invoke: invoke['tools:invoke'],
     confirm: invoke['tools:confirm']
   },
@@ -117,9 +139,13 @@ contextBridge.exposeInMainWorld('legion', {
     listenStop: invoke['voice:listenStop'],
     capabilities: invoke['voice:capabilities'],
     pipeline: invoke['voice:pipeline'],
-    wakeStart: invoke['voice:wakeStart'],
+wakeStart: invoke['voice:wakeStart'],
     wakeStop: invoke['voice:wakeStop'],
-    wakeStatus: invoke['voice:wakeStatus']
+    wakeStatus: invoke['voice:wakeStatus'],
+    captureStart: invoke['voice:captureStart'],
+    captureChunk: send['voice:captureChunk'],
+    captureStop: invoke['voice:captureStop'],
+    captureAbort: invoke['voice:captureAbort']
   },
   system: {
     full: invoke['system:full'],

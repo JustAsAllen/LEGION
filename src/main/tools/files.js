@@ -207,6 +207,7 @@ module.exports = function registerFileTools(registry) {
       required: ['path']
     },
     confirm(args) {
+      if (args.dryRun !== false) return null;
       return {
         message: `This will move files in "${args.path}" into per-type subfolders. Files will be relocated, not deleted.`,
         impact: 'Relocating files inside a folder'

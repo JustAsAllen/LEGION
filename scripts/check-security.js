@@ -19,7 +19,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { SecretStore, ENV_MAP } = require('../src/main/secrets');
-const { PathSandbox, SandboxError, HOME } = require('../src/main/tools/sandbox');
+const { PathSandbox, SandboxError, DEFAULT_WORKSPACE } = require('../src/main/tools/sandbox');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -73,6 +73,12 @@ async function check(name, fn) {
 
   const CANARY = 'sk-test-canary-do-not-leak-0123456789abcdef';
   const store = new SecretStore(fs.mkdtempSync(path.join(os.tmpdir(), 'legion-sec-')));
+
+  await check('Gemini has a dedicated environment variable', () => {
+    assert(ENV_MAP.gemini === 'GEMINI_API_KEY', `Gemini mapped to ${ENV_MAP.gemini}`);
+    assert(!('ollama' in ENV_MAP), 'the retired local provider is still mapped');
+    return 'GEMINI_API_KEY';
+  });
 
   await check('a secret is stored and reported as present', () => {
     store.set('openai', CANARY);
@@ -167,24 +173,24 @@ async function check(name, fn) {
 
   const sandbox = new PathSandbox([]);
 
-  await check('the sandbox confines paths to the user profile', () => {
-    const inside = sandbox.resolve(path.join(HOME, 'notes.txt'), { mustExist: false });
-    assert(inside.startsWith(HOME), 'a path inside home was rewritten');
-    for (const outside of ['C:\\Windows\\System32\\drivers\\etc\\hosts', path.join(os.tmpdir(), 'x')]) {
-      if (outside.startsWith(HOME)) continue;
+  await check('the sandbox confines paths to the LEGION workspace', () => {
+    const inside = sandbox.resolve(path.join(DEFAULT_WORKSPACE, 'notes.txt'), { mustExist: false });
+    assert(inside.startsWith(DEFAULT_WORKSPACE), 'a workspace path was rewritten');
+    for (const outside of ['C:\\Windows\\System32\\drivers\\etc\\hosts', path.join(os.tmpdir(), 'x'), path.join(path.dirname(DEFAULT_WORKSPACE), 'other-project')]) {
+      if (outside.startsWith(DEFAULT_WORKSPACE)) continue;
       let threw = false;
       try { sandbox.resolve(outside); } catch (e) { threw = e instanceof SandboxError; }
       assert(threw, `the sandbox allowed ${outside}`);
     }
-    return 'outside the profile is refused';
+    return 'outside the workspace is refused';
   });
 
   await check('the sandbox refuses traversal, NUL bytes and drive roots', () => {
     // Containment is decided by where a path finally lands, not by the string:
     // a relative path that stays inside the profile is legitimately allowed, so
     // these cases are built from HOME to actually escape, independent of cwd.
-    const escape = path.join(HOME, '..', '..', 'Windows', 'System32');
-    const backIn = path.join(HOME, 'Desktop', 'legion', '..', 'legion', 'notes.txt');
+    const escape = path.join(DEFAULT_WORKSPACE, '..', '..', 'Windows', 'System32');
+    const backIn = path.join(DEFAULT_WORKSPACE, 'src', '..', 'src', 'notes.txt');
     const cases = [
       [escape, 'traversal out of the profile'],
       ['C:\\', 'drive root'],
@@ -199,12 +205,12 @@ async function check(name, fn) {
       assert(threw instanceof SandboxError, `accepted ${label}`);
     }
     // And the inverse, so the check cannot pass by refusing everything.
-    assert(sandbox.resolve(backIn).startsWith(HOME), 'a legitimate path inside the profile was refused');
+    assert(sandbox.resolve(backIn).startsWith(DEFAULT_WORKSPACE), 'a legitimate path inside the workspace was refused');
     return `${cases.length} hostile inputs refused, a legitimate one allowed`;
   });
 
   await check('a symlink cannot escape an allowed root', () => {
-    const root = fs.mkdtempSync(path.join(HOME, 'legion-sandbox-'));
+    const root = fs.mkdtempSync(path.join(DEFAULT_WORKSPACE, '.legion-sandbox-'));
     const target = fs.mkdtempSync(path.join(os.tmpdir(), 'legion-outside-'));
     const link = path.join(root, 'escape');
     let made = false;

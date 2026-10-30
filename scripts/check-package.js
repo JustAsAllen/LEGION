@@ -137,7 +137,7 @@ const launched = await new Promise((resolve) => {
 });
 
 if (!launched.ok) {
-  const hostBlocked = /Application Control|Smart App Control|blocked|not permitted|access is denied/i.test(launched.error || '');
+  const hostBlocked = /Application Control|Smart App Control|blocked|not permitted|access is denied|spawn UNKNOWN/i.test(launched.error || '');
   if (hostBlocked && process.env.LEGION_ALLOW_UNSIGNED_PACKAGE_CHECK === '1') {
     console.log('\\nSKIP  executable launch: Windows policy blocked the unsigned test binary; static package checks passed.');
     console.log('      This flag does not disable Windows security; it only makes static validation non-failing.');

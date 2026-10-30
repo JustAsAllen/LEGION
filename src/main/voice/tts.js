@@ -127,6 +127,49 @@ function normaliseMode(mode) {
   return Object.values(MODES).includes(m) ? m : MODES.AUTO;
 }
 
+/**
+ * A valid, silent WAV for development checks.
+ *
+ * This is not a speech engine. It exists so the renderer can exercise the real
+ * synthesis -> playback -> SPEAKING -> IDLE path on a machine with no audio
+ * device, no voice pack, and no network. Main only reaches it when the caller
+ * is the dev build; production refuses the request before synthesis starts.
+ */
+function mockSynthesis(clean, mode, trace) {
+  const sampleRate = 24000;
+  const durationMs = Math.max(700, Math.min(2400, Math.round(clean.length * 42)));
+  const frames = Math.round((sampleRate * durationMs) / 1000);
+  const dataSize = frames * 2;
+  const buf = Buffer.alloc(44 + dataSize);
+  buf.write('RIFF', 0, 'ascii');
+  buf.writeUInt32LE(36 + dataSize, 4);
+  buf.write('WAVE', 8, 'ascii');
+  buf.write('fmt ', 12, 'ascii');
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);                 // PCM
+  buf.writeUInt16LE(1, 22);                 // mono
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(sampleRate * 2, 28);    // byte rate
+  buf.writeUInt16LE(2, 32);                 // block align
+  buf.writeUInt16LE(16, 34);                // bits per sample
+  buf.write('data', 36, 'ascii');
+  buf.writeUInt32LE(dataSize, 40);
+  trace.push('mock tier');
+  return {
+    audio: buf,
+    format: 'wav',
+    sampleRate,
+    bytes: buf.length,
+    durationMs,
+    voice: null,
+    source: 'mock',
+    tier: 'mock',
+    mode,
+    mock: true,
+    trace
+  };
+}
+
 async function synthesize(text, opts) {
   const options = opts || {};
   const clean = String(text || '').replace(/```[\s\S]*?```/g, ' ').replace(/[*_`#>]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -134,6 +177,10 @@ async function synthesize(text, opts) {
 
   const mode = normaliseMode(options.ttsMode);
   const trace = [];
+
+  // Development-only shortcut. It is deliberately ahead of the pack so a known
+  // phrase still produces the mock tier when a test asks for it by name.
+  if (options.mock === true) return mockSynthesis(clean, mode, trace);
 
   // 1. the pack. A plain file read, so it is tried before any platform or
   //    network concern -- it is the only tier that works everywhere.

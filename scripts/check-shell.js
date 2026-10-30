@@ -358,18 +358,26 @@ async function main() {
     await cdp.eval(`(window.legionApp.stage.app || {}).focus && (window.legionApp.stage.app.focus(), true)`).catch(() => null);
     let lastSample = null;
     const recentred = await waitFor(async () => {
-      const s = await cdp.eval(`(() => ({
-        shift: window.legionApp.stage.panelShift,
-        camX: window.legionApp.stage.camera.position.x,
-        fps: Math.round(window.legionApp.stage.fps),
-        visible: document.visibilityState
-      }))()`);
+      const s = await cdp.eval(`(() => {
+        const st = window.legionApp.stage;
+        // Camera x also carries pointer parallax, which depends on where the
+        // cursor happens to rest. Isolate the panel term before sampling.
+        const parallax = st.pointerSmooth.x * 1.5 * (st.reducedMotion ? 0 : 1);
+        return {
+          shift: st.panelShift,
+          camX: st.camera.position.x,
+          panelX: st.camera.position.x - parallax,
+          pointerX: st.pointerSmooth.x,
+          fps: Math.round(st.fps),
+          visible: document.visibilityState
+        };
+      })()`);
       lastSample = s;
-      return (Math.abs(s.shift) < 0.5 && Math.abs(s.camX) < 0.5) ? s : null;
+      return (Math.abs(s.shift) < 0.5 && Math.abs(s.panelX) < 0.5) ? s : null;
     }, 30000, 'stage to re-centre').catch(() => null);
     check('stage re-centres when the panel closes', !!recentred,
       recentred
-        ? `panelShift=${recentred.shift.toFixed(2)} camX=${recentred.camX.toFixed(2)}`
+        ? `panelShift=${recentred.shift.toFixed(2)} panelX=${recentred.panelX.toFixed(2)} pointerX=${recentred.pointerX.toFixed(2)}`
         : `never settled (${JSON.stringify(lastSample)})`);
 
     /* ---- 5. modal + toast layering ------------------------------ */
@@ -466,7 +474,7 @@ async function main() {
       await new Promise(r => setTimeout(r, 500));
       const afterPtt = { ptt: ptt.checked, rowHidden: row.hidden };
       cont.checked = true; cont.dispatchEvent(new Event('change', { bubbles: true }));
-      await new Promise(r => setTimeout(r, 1400));
+      await until(() => a.audio.micActive === true, 6000);
       const afterCont = {
         ptt: ptt.checked, cont: cont.checked,
         continuous: !!a.continuous,
@@ -512,15 +520,33 @@ async function main() {
       if (!bridge || !bridge.voice) return { error: 'preload voice bridge not reachable' };
       let stubbed = false;
       const realListen = bridge.voice.listen;
+      const realEvents = a.apiEvents;
 
       // Feed the two outcomes continuous mode has to survive: a turn that heard
       // nothing, and a deliberate stop.
+      //
+      // The microphone path no longer goes through voice:listen. It opens a
+      // capture, taps the graph, and is completed out of band on
+      // voice:captureEnd. So this emulates main rather than stubbing one
+      // function: captureStart accepts, and the completion event arrives with
+      // the outcome, which is the shape the real pipeline produces.
       let reply = { ok: false, error: { code: 'E_STT_EMPTY', message: 'nothing' } };
       // contextBridge freezes the exposed object, so it cannot be patched
-      // directly. Swap the reference the app module holds instead.
+      // directly. Swap the references the app module holds instead.
       const realVoice = a.apiVoice;
       try {
-        Object.defineProperty(a, 'apiVoice', { value: { ...realVoice, listen: async () => reply }, configurable: true, writable: true });
+        Object.defineProperty(a, 'apiVoice', {
+          value: { ...realVoice, listen: async () => reply, captureStart: async () => ({ ok: true, id: 'stub-capture', sampleRate: 16000, maxSeconds: 12 }) },
+          configurable: true, writable: true
+        });
+        Object.defineProperty(a, 'apiEvents', {
+          value: (channel, handler) => {
+            if (channel !== 'voice:captureEnd') return realEvents(channel, handler);
+            const id = setTimeout(() => handler(Object.assign({ id: 'stub-capture' }, reply)), 30);
+            return () => clearTimeout(id);
+          },
+          configurable: true, writable: true
+        });
         stubbed = true;
       } catch (e) { /* fall through to the stubbed flag */ }
       if (!stubbed) return { error: 'could not stub the voice bridge: ' + e.message };
@@ -534,6 +560,7 @@ async function main() {
       a.setContinuousMode(false);
       await new Promise(r => setTimeout(r, 2500));
       Object.defineProperty(a, 'apiVoice', { value: realVoice, configurable: true, writable: true });
+      Object.defineProperty(a, 'apiEvents', { value: realEvents, configurable: true, writable: true });
       unhook();
       return { afterSilence, states: [...new Set(seen)], final: a.store.state, continuous: !!a.continuous };
     })()`);
@@ -567,6 +594,45 @@ async function main() {
     // interface and read by nothing. Assert each one now moves real state.
     await cdp.eval(`(async () => { window.legionApp.togglePanel('settings'); return true; })()`);
     await sleep(900);
+
+    const mockGuard = await cdp.eval(`(async () => {
+      const before = window.legionApp.config.ai.provider;
+      let err = null;
+      try { await window.legion.config.set({ ai: { provider: 'mock' } }); } catch (e) { err = e.message; }
+      let ttsErr = null;
+      try { await window.legion.config.set({ voice: { mockTts: true } }); } catch (e) { ttsErr = e.message; }
+      let tts = null;
+      try { tts = await window.legion.voice.speak('Hello LEGION', { mock: true }); } catch (e) { tts = { error: { code: 'THREW', message: e.message } }; }
+      const sim = await window.legionApp.simulateVoice('Hello LEGION', { delayMs: 0 });
+      return {
+        before,
+        after: window.legionApp.config.ai.provider,
+        err,
+        ttsErr,
+        ttsAfter: window.legionApp.config.voice?.mockTts,
+        ttsOk: tts?.ok,
+        ttsCode: tts?.error?.code,
+        simOk: sim?.ok,
+        simCode: sim?.error?.code,
+        hidden: document.getElementById('set-provider-mock').hidden,
+        devHidden: document.getElementById('set-dev').hidden,
+        mockVoiceChecked: document.getElementById('set-mock-tts').checked
+      };
+    })()`);
+    check('a production build hides the mock provider', mockGuard.hidden === true && mockGuard.devHidden === true,
+      `mockHidden=${mockGuard.hidden} devHidden=${mockGuard.devHidden}`);
+    check('a production build refuses the mock at config:set',
+      /mock provider is not available/i.test(mockGuard.err || '') && mockGuard.after === mockGuard.before,
+      `provider=${mockGuard.after} err=${mockGuard.err}`);
+    check('a production build refuses simulated voice',
+      mockGuard.simOk === false && mockGuard.simCode === 'E_DEV_ONLY',
+      `ok=${mockGuard.simOk} code=${mockGuard.simCode}`);
+    check('a production build refuses mock speech at config:set',
+      /mock speech output is not available/i.test(mockGuard.ttsErr || '') && mockGuard.ttsAfter !== true,
+      `mockTts=${mockGuard.ttsAfter} err=${mockGuard.ttsErr}`);
+    check('a production build refuses a direct mock synthesis request',
+      mockGuard.ttsOk === false && mockGuard.ttsCode === 'E_DEV_ONLY' && mockGuard.mockVoiceChecked === false,
+      `ok=${mockGuard.ttsOk} code=${mockGuard.ttsCode} checked=${mockGuard.mockVoiceChecked}`);
 
     const toggles = await cdp.eval(`(async () => {
       const a = window.legionApp;
@@ -658,7 +724,7 @@ async function main() {
       const v = window.legionApp.config?.voice || {};
       const p = window.legionApp.config?.privacy || {};
       return {
-        voice: ['speakerDeviceId', 'pitch', 'sttEngine', 'whisperModelPath'].filter((k) => k in v),
+        voice: ['speakerDeviceId', 'pitch', 'whisperModelPath'].filter((k) => k in v),
         privacy: ['telemetry'].filter((k) => k in p)
       };
     })()`);

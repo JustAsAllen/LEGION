@@ -18,15 +18,21 @@ export class Waveform {
     this.accent = [53, 200, 255];
     this.visible = true;
     this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    this._resizeObserver = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(() => this.resize(true))
+      : null;
+    if (this._resizeObserver) this._resizeObserver.observe(canvas);
     this.resize();
   }
 
-  resize() {
+  resize(force) {
     const c = this.canvas;
+    if (!force && this._sized) return;
     const rect = c.getBoundingClientRect();
     const w = Math.max(1, Math.round((rect.width || 520) * this.dpr));
     const h = Math.max(1, Math.round((rect.height || 64) * this.dpr));
     if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+    this._sized = true;
   }
 
   setAccent(rgb) { this.accent = rgb; }
@@ -45,7 +51,7 @@ export class Waveform {
 
   draw(state, dt) {
     if (this.visible === false) return;
-    this.resize();
+    if (!this._sized) this.resize(true);
     const g = this.ctx;
     const W = this.canvas.width;
     const H = this.canvas.height;
@@ -87,11 +93,7 @@ export class Waveform {
       const h = Math.max(1.5 * this.dpr, v * maxH);
       const x = i * bw + (bw - barW) / 2;
       const alpha = active ? 0.35 + v * 0.65 : 0.22 + v * 0.4;
-      const grad = g.createLinearGradient(0, midY - h, 0, midY + h);
-      grad.addColorStop(0, `rgba(${r}, ${gg}, ${b}, ${alpha})`);
-      grad.addColorStop(0.5, `rgba(${r}, ${gg}, ${b}, ${alpha * 0.85})`);
-      grad.addColorStop(1, `rgba(${r}, ${gg}, ${b}, ${alpha})`);
-      g.fillStyle = grad;
+      g.fillStyle = `rgba(${r}, ${gg}, ${b}, ${alpha})`;
       const rr = Math.min(barW / 2, 2.5 * this.dpr);
       roundRect(g, x, midY - h, barW, h * 2, rr);
       g.fill();
@@ -100,6 +102,15 @@ export class Waveform {
     // Centre line
     g.fillStyle = active ? `rgba(${r}, ${gg}, ${b}, 0.22)` : 'rgba(126,158,200,0.12)';
     g.fillRect(0, midY - 0.5 * this.dpr, W, this.dpr);
+  }
+
+  dispose() {
+    if (this._resizeObserver) this._resizeObserver.disconnect();
+    this._resizeObserver = null;
+    this.ctx?.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.canvas.width = 1;
+    this.canvas.height = 1;
+    this._sized = false;
   }
 }
 
