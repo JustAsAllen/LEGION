@@ -176,8 +176,8 @@ async function transcribe(wavPath, opts) {
   const found = locate(options);
   if (!found) return null;
 
-  const info = await probeDevices(found.bin);
-  if (!info.ok) return null;
+  const info = await probe(options);
+  if (!info.available) return null;
 
   const args = [
     '-m', found.model,

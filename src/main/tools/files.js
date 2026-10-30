@@ -171,8 +171,8 @@ module.exports = function registerFileTools(registry) {
           scanned++;
           if (re && !re.test(it.name)) continue;
           let line = null;
+          const st = await statSafe(full);
           if (needle) {
-            const st = await statSafe(full);
             if (!st || st.size > 4 * 1024 * 1024) continue;
             try {
               const text = (await fsp.readFile(full, 'utf8')).toLowerCase();
@@ -183,7 +183,6 @@ module.exports = function registerFileTools(registry) {
               line = text.slice(start, end === -1 ? start + 200 : end).trim().slice(0, 240);
             } catch (_) { continue; }
           }
-          const st = await statSafe(full);
           results.push({ path: full, name: it.name, sizeBytes: st ? st.size : null, modified: st ? st.mtime.toISOString() : null, match: line });
         }
       };

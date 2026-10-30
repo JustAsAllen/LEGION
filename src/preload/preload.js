@@ -23,7 +23,7 @@ const INVOKE_CHANNELS = [
   'tools:list', 'tools:audit', 'tools:invoke', 'tools:confirm',
   'voice:voices', 'voice:speak', 'voice:speechEnd', 'voice:speechCancel', 'voice:listen', 'voice:listenStop', 'voice:capabilities', 'voice:pipeline', 'voice:pack',
   'voice:wakeStart', 'voice:wakeStop', 'voice:wakeStatus',
-  'voice:captureStart', 'voice:captureChunk', 'voice:captureStop', 'voice:captureAbort',
+  'voice:captureStart', 'voice:captureStop', 'voice:captureAbort',
   'system:full', 'shell:showItem', 'shell:openPath',
   'dialog:confirm', 'app:openExternal'
 ];
@@ -135,11 +135,12 @@ contextBridge.exposeInMainWorld('legion', {
     pack: invoke['voice:pack'],
     speak: invoke['voice:speak'],
     speechEnd: invoke['voice:speechEnd'],
+    speechCancel: invoke['voice:speechCancel'],
     listen: invoke['voice:listen'],
     listenStop: invoke['voice:listenStop'],
     capabilities: invoke['voice:capabilities'],
     pipeline: invoke['voice:pipeline'],
-wakeStart: invoke['voice:wakeStart'],
+    wakeStart: invoke['voice:wakeStart'],
     wakeStop: invoke['voice:wakeStop'],
     wakeStatus: invoke['voice:wakeStatus'],
     captureStart: invoke['voice:captureStart'],

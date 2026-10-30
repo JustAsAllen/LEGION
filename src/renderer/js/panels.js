@@ -702,7 +702,8 @@ export function settingsPanel(host, app) {
     $('#set-adaptive').checked = c.visual?.adaptiveQuality !== false;
     $('#set-reduced').checked = !!c.visual?.reducedMotion;
     $('#set-waveform').checked = c.visual?.showWaveform !== false;
-    for (const b of host.querySelectorAll('#set-themes .chip')) b.classList.toggle('is-on', b.dataset.theme === (c.ui?.theme || 'abyss'));
+    const theme = c.ui?.theme === 'legion-dark' ? 'abyss' : (c.ui?.theme || 'abyss');
+    for (const b of host.querySelectorAll('#set-themes .chip')) b.classList.toggle('is-on', b.dataset.theme === theme);
     for (const b of host.querySelectorAll('#set-panelpos .chip')) b.classList.toggle('is-on', b.dataset.pos === (c.ui?.panelPosition || 'right'));
 
     $('#set-store-history').checked = c.privacy?.storeConversations !== false;

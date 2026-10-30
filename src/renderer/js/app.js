@@ -1454,6 +1454,7 @@ class Legion {
   async resetAll() {
     try {
       await api.memory.clearAll();
+      await api.secrets.clear('gemini');
       await api.secrets.clear('anthropic');
       await api.secrets.clear('openai');
       await api.config.reset();
