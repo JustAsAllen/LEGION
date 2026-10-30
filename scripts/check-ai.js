@@ -14,7 +14,10 @@ import { createRequire } from 'node:module';
 import process from 'node:process';
 
 const require = createRequire(import.meta.url);
-const { createProvider, mergeAlternating, ssePayload } = require('../src/main/ai/providers.js');
+const {
+  createProvider, mergeAlternating, ssePayload,
+  anthropicMessages, openaiMessages, geminiContents
+} = require('../src/main/ai/providers.js');
 const { AIEngine } = require('../src/main/ai/engine.js');
 
 let failures = 0;
@@ -450,6 +453,72 @@ function helperChecks() {
   check('event names are not payloads', ssePayload('event: message_start') === null);
   check('a done sentinel is not a payload', ssePayload('data: [DONE]') === null);
   check('a data line is a payload', ssePayload('data: {"a":1}') === '{"a":1}');
+
+  /* native tool transcripts */
+  const transcript = [
+    { role: 'user', content: 'read a.txt' },
+    { role: 'assistant', content: 'on it', toolCalls: [{ id: 'c1', name: 'files_read', arguments: { path: 'a.txt' } }] },
+    { role: 'tool', toolCallId: 'c1', name: 'files_read', ok: true, content: '{"ok":true,"result":"hi"}' }
+  ];
+
+  const a = anthropicMessages(transcript);
+  const aAssistant = a.find((m) => m.role === 'assistant');
+  const aTool = a.find((m) => m.role === 'user' && Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result'));
+  check('anthropic keeps the assistant text block', aAssistant.content.some((b) => b.type === 'text' && b.text === 'on it'),
+    JSON.stringify(aAssistant));
+  check('anthropic emits a tool_use block', aAssistant.content.some((b) => b.type === 'tool_use' && b.id === 'c1' && b.name === 'files_read'),
+    JSON.stringify(aAssistant));
+  check('anthropic emits a tool_result block', !!aTool && aTool.content[0].tool_use_id === 'c1',
+    JSON.stringify(aTool));
+  check('anthropic alternates user and assistant turns', a.length === 3 && a[0].role === 'user' && a[1].role === 'assistant' && a[2].role === 'user',
+    a.map((m) => m.role).join(','));
+
+  const multi = anthropicMessages([
+    { role: 'user', content: 'do both' },
+    { role: 'assistant', content: '', toolCalls: [{ id: 'a', name: 'x', arguments: {} }, { id: 'b', name: 'y', arguments: {} }] },
+    { role: 'tool', toolCallId: 'a', name: 'x', ok: true, content: '1' },
+    { role: 'tool', toolCallId: 'b', name: 'y', ok: true, content: '2' }
+  ]);
+  check('anthropic folds parallel tool results into one user turn',
+    multi.length === 3 && multi[2].content.length === 2, JSON.stringify(multi));
+
+  const o = openaiMessages(transcript);
+  const oAssistant = o[1];
+  const oTool = o[2];
+  check('openai assistant carries tool_calls', oAssistant.tool_calls && oAssistant.tool_calls[0].id === 'c1' &&
+    oAssistant.tool_calls[0].function.name === 'files_read', JSON.stringify(oAssistant));
+  check('openai tool call arguments are a JSON string', typeof oAssistant.tool_calls[0].function.arguments === 'string',
+    typeof oAssistant.tool_calls[0].function.arguments);
+  check('openai tool result is a native tool turn', oTool.role === 'tool' && oTool.tool_call_id === 'c1', JSON.stringify(oTool));
+
+  const g = geminiContents(transcript);
+  const gModel = g.find((m) => m.role === 'model');
+  const gUser = g.filter((m) => m.role === 'user').pop();
+  check('gemini emits a functionCall part', gModel.parts.some((p) => p.functionCall && p.functionCall.name === 'files_read'),
+    JSON.stringify(gModel));
+  check('gemini emits a functionResponse part', gUser.parts.some((p) => p.functionResponse && p.functionResponse.name === 'files_read'),
+    JSON.stringify(gUser));
+  check('gemini wraps the tool payload as an object response',
+    gUser.parts[0].functionResponse.response.ok === true,
+    JSON.stringify(gUser.parts[0].functionResponse.response));
+
+  /* provider buildBody uses the native shapes, not user text */
+  const anthropic = createProvider('anthropic', {}, 'sk-test-key');
+  const anthropicBody = anthropic.buildBody(chat({ messages: transcript }));
+  check('anthropic buildBody sends tool blocks', anthropicBody.messages.some((m) =>
+    Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_use')), JSON.stringify(anthropicBody.messages));
+  check('anthropic buildBody hides tool output from user text', !JSON.stringify(anthropicBody.messages).includes('Tool result for'),
+    'no fake tool text');
+
+  const openai = createProvider('openai', {}, 'sk-test-key');
+  const openaiBody = openai.buildBody(chat({ messages: transcript }));
+  check('openai buildBody sends a tool turn', openaiBody.messages.some((m) => m.role === 'tool' && m.tool_call_id === 'c1'),
+    JSON.stringify(openaiBody.messages.map((m) => m.role)));
+
+  const gemini = createProvider('gemini', {}, 'test-key');
+  const geminiBody = gemini.buildBody(chat({ messages: transcript }));
+  check('gemini buildBody sends functionResponse', geminiBody.contents.some((m) =>
+    m.parts.some((p) => p.functionResponse)), JSON.stringify(geminiBody.contents));
 }
 
 /* ------------------------------------------------------------------ */
@@ -657,6 +726,74 @@ async function engineChecks() {
     const err = await pending;
     checkEq('a cancelled turn reports E_ABORTED', err && err.code, 'E_ABORTED');
     check('a cancelled turn is flagged as aborted', !!(err && err.aborted), JSON.stringify(err && err.code));
+  }
+
+  // A transient failure before any text must be retried.
+  {
+    const events = [];
+    let calls = 0;
+    const { deps } = stubDeps({ onEvent: (type, payload) => events.push({ type, payload }) });
+    const res = await withFetch(
+      async () => {
+        calls++;
+        if (calls === 1) {
+          return {
+            ok: false,
+            status: 429,
+            headers: { get: () => '0.01' },
+            async text() { return 'slow down'; },
+            async json() { return {}; }
+          };
+        }
+        return jsonResponse({}, { body: geminiTurn({ content: 'second try' }) });
+      },
+      () => new AIEngine(deps).respond('hi')
+    );
+    checkEq('a rate limit is retried once', calls, 2);
+    checkEq('the retried turn answers', res.text, 'second try');
+    check('a retry event is emitted before the answer',
+      events.some((e) => e.type === 'retry' && e.payload.attempt === 1 && e.payload.code === 'E_AI_RATE_LIMIT'),
+      JSON.stringify(events.filter((e) => e.type === 'retry')));
+  }
+
+  // An auth failure is permanent: retrying would just burn the quota.
+  {
+    let calls = 0;
+    const { deps } = stubDeps();
+    const err = await withFetch(
+      async () => {
+        calls++;
+        return { ok: false, status: 401, headers: { get: () => null }, async text() { return 'bad key'; } };
+      },
+      () => new AIEngine(deps).respond('hi').then(() => null, (e) => e)
+    );
+    checkEq('an auth failure surfaces E_AI_AUTH', err && err.code, 'E_AI_AUTH');
+    checkEq('an auth failure is not retried', calls, 1);
+  }
+
+  // The second request must carry a native tool transcript.
+  {
+    let sent = null;
+    let round = 0;
+    const { deps } = stubDeps();
+    await withFetch(
+      async (_url, init) => {
+        round++;
+        if (round === 2) sent = JSON.parse(init.body);
+        return round === 1
+          ? jsonResponse({}, { body: geminiTurn({ toolCalls: [call('ping', { n: 1 })] }) })
+          : jsonResponse({}, { body: geminiTurn({ content: 'done' }) });
+      },
+      () => new AIEngine(deps).respond('go')
+    );
+    check('the tool round is sent as a native functionCall',
+      !!sent && sent.contents.some((m) => m.parts.some((p) => p.functionCall && p.functionCall.name === 'ping')),
+      JSON.stringify(sent && sent.contents));
+    check('the tool result is sent as a native functionResponse',
+      !!sent && sent.contents.some((m) => m.parts.some((p) => p.functionResponse && p.functionResponse.name === 'ping')),
+      JSON.stringify(sent && sent.contents));
+    check('the tool result is not fake user prose',
+      !!sent && !JSON.stringify(sent.contents).includes('Tool result for'), 'native shape');
   }
 
   // An unconfigured provider with no local fallback must say so.

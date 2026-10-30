@@ -319,6 +319,109 @@ function mergeAlternating(messages) {
   return out;
 }
 
+/**
+ * Native tool transcript helpers.
+ *
+ * The engine emits one assistant turn with a `toolCalls` array followed by
+ * `role: 'tool'` messages. Each provider wants a different shape, and sending
+ * tool output as ordinary user text (the previous behaviour) wasted tokens and
+ * made the model re-read its own narration on every round.
+ */
+function anthropicMessages(messages) {
+  const out = [];
+  const pushBlocks = (role, blocks) => {
+    const last = out[out.length - 1];
+    if (last && last.role === role && Array.isArray(last.content)) last.content.push(...blocks);
+    else out.push({ role, content: blocks });
+  };
+
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      const block = {
+        type: 'tool_result',
+        tool_use_id: m.toolCallId,
+        content: String(m.content == null ? '' : m.content)
+      };
+      if (m.ok === false) block.is_error = true;
+      pushBlocks('user', [block]);
+      continue;
+    }
+    if (m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length) {
+      const blocks = [];
+      if (m.content) blocks.push({ type: 'text', text: String(m.content) });
+      for (const tc of m.toolCalls) {
+        blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments || {} });
+      }
+      out.push({ role: 'assistant', content: blocks });
+      continue;
+    }
+    pushBlocks(m.role === 'assistant' ? 'assistant' : 'user', [{
+      type: 'text',
+      text: String(m.content == null ? '' : m.content)
+    }]);
+  }
+  return out;
+}
+
+function openaiMessages(messages) {
+  return messages.map((m) => {
+    if (m.role === 'tool') {
+      return { role: 'tool', tool_call_id: m.toolCallId, content: String(m.content == null ? '' : m.content) };
+    }
+    if (m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length) {
+      return {
+        role: 'assistant',
+        content: m.content || null,
+        tool_calls: m.toolCalls.map((tc) => ({
+          id: tc.id,
+          type: 'function',
+          function: { name: tc.name, arguments: JSON.stringify(tc.arguments || {}) }
+        }))
+      };
+    }
+    return { role: m.role, content: String(m.content == null ? '' : m.content) };
+  });
+}
+
+function geminiContents(messages) {
+  const out = [];
+  const push = (role, parts) => {
+    const last = out[out.length - 1];
+    if (last && last.role === role) last.parts.push(...parts);
+    else out.push({ role, parts });
+  };
+
+  const responseValue = (content) => {
+    try {
+      const parsed = JSON.parse(content);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      return { result: parsed };
+    } catch (_) {
+      return { result: String(content == null ? '' : content) };
+    }
+  };
+
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      push('user', [{
+        functionResponse: { name: m.name, response: responseValue(m.content) }
+      }]);
+      continue;
+    }
+    if (m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length) {
+      const parts = [];
+      if (m.content) parts.push({ text: String(m.content) });
+      for (const tc of m.toolCalls) parts.push({ functionCall: { name: tc.name, args: tc.arguments || {} } });
+      out.push({ role: 'model', parts });
+      continue;
+    }
+    push(m.role === 'assistant' ? 'model' : 'user', [{
+      text: String(m.content == null ? '' : m.content)
+    }]);
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------ */
 /* Providers                                                            */
 /* ------------------------------------------------------------------ */
@@ -356,10 +459,7 @@ class AnthropicProvider extends Provider {
       max_tokens: maxTokens || 900,
       temperature: temperature === undefined ? 0.3 : temperature,
       system,
-      messages: mergeAlternating(messages.map((m) => ({
-        role: m.role === 'assistant' ? 'assistant' : 'user',
-        content: m.content
-      })))
+      messages: anthropicMessages(messages)
     };
     if (tools && tools.length) {
       body.tools = tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
@@ -442,9 +542,7 @@ class OpenAIProvider extends Provider {
   get base() { return (this.cfg.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, ''); }
 
   buildBody({ system, messages, tools, temperature, maxTokens, stream }) {
-    const wire = [{ role: 'system', content: system }].concat(
-      messages.map((m) => ({ role: m.role, content: m.content }))
-    );
+    const wire = [{ role: 'system', content: system }].concat(openaiMessages(messages));
     const body = {
       model: this.model,
       messages: wire,
@@ -583,10 +681,7 @@ class GeminiProvider extends Provider {
 
   buildBody({ system, messages, tools, temperature, maxTokens }) {
     const body = {
-      contents: mergeAlternating(messages).map((m) => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: String(m.content == null ? '' : m.content) }]
-      })),
+      contents: geminiContents(messages),
       generationConfig: {
         temperature: temperature === undefined ? 0.3 : temperature,
         maxOutputTokens: maxTokens || 900
@@ -777,6 +872,9 @@ module.exports = {
   MockProvider,
   ProviderError,
   mergeAlternating,
+  anthropicMessages,
+  openaiMessages,
+  geminiContents,
   ssePayload,
   TIMEOUTS
 };

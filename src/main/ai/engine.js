@@ -7,6 +7,24 @@ const { ToolError } = require('../tools/registry');
 const MAX_TOOL_ROUNDS = 6;
 const TOOL_RESULT_CHAR_LIMIT = 6000;
 const SPEECH_CHUNK_MIN = 48;
+const MAX_PROVIDER_ATTEMPTS = 3;
+const RETRYABLE = new Set(['E_AI_RATE_LIMIT', 'E_AI_CONN', 'E_AI_HTTP', 'E_AI_TIMEOUT', 'E_AI_STREAM']);
+
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) return reject(new Error('aborted'));
+    const t = setTimeout(resolve, ms);
+    if (signal) {
+      signal.addEventListener('abort', () => { clearTimeout(t); reject(new Error('aborted')); }, { once: true });
+    }
+  });
+}
+
+function retryDelayMs(err, attempt) {
+  const header = Number(err && err.retryAfter);
+  if (Number.isFinite(header) && header > 0) return Math.min(15000, header * 1000);
+  return Math.min(8000, 600 * Math.pow(2, attempt - 1)) + Math.floor(Math.random() * 250);
+}
 
 function completeSpeechChunks(buffer, flush) {
   const chunks = [];
@@ -153,18 +171,38 @@ class AIEngine {
     try {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         let speechBuffer = '';
-        const res = await provider.chat({
-          system, messages: wire, tools,
-          temperature: cfg.temperature, maxTokens: cfg.maxTokens, signal,
-          onDelta: (delta) => {
-            if (!delta) return;
-            this.emit('delta', { text: delta });
-            speechBuffer += delta;
-            const ready = completeSpeechChunks(speechBuffer, false);
-            speechBuffer = ready.rest;
-            for (const text of ready.chunks) this.emit('response-chunk', { text, sequence: speechChunkSeq++ });
+        let emitted = false;
+        let res = null;
+
+        // A transient failure before the first delta is safe to retry. Once any
+        // text has reached the renderer, replaying the request would duplicate
+        // it, so the error is surfaced instead.
+        for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt++) {
+          try {
+            res = await provider.chat({
+              system, messages: wire, tools,
+              temperature: cfg.temperature, maxTokens: cfg.maxTokens, signal,
+              onDelta: (delta) => {
+                if (!delta) return;
+                emitted = true;
+                this.emit('delta', { text: delta });
+                speechBuffer += delta;
+                const ready = completeSpeechChunks(speechBuffer, false);
+                speechBuffer = ready.rest;
+                for (const text of ready.chunks) this.emit('response-chunk', { text, sequence: speechChunkSeq++ });
+              }
+            });
+            break;
+          } catch (err) {
+            if (signal.aborted) throw err;
+            const canRetry = !emitted && RETRYABLE.has(err.code) && attempt < MAX_PROVIDER_ATTEMPTS;
+            if (!canRetry) throw err;
+            const delay = retryDelayMs(err, attempt);
+            this.emit('retry', { attempt, delayMs: delay, code: err.code, provider: provider.id });
+            await sleep(delay, signal);
           }
-        });
+        }
+
         usage = res.usage;
         model = res.model;
         if (res.text) finalText = res.text;
@@ -177,17 +215,36 @@ class AIEngine {
           break;
         }
 
-        for (const call of res.toolCalls) {
+        // One assistant message carries every call from this round, and each
+        // result is a native tool message. Providers translate that shape to
+        // their own wire format instead of receiving tool output as user text.
+        const calls = res.toolCalls.map((call, index) => ({
+          id: `${round + 1}-${call.id || index}`,
+          name: call.name,
+          arguments: call.arguments || {}
+        }));
+        wire.push({ role: 'assistant', content: res.text || '', toolCalls: calls });
+
+        for (const call of calls) {
           const outcome = await this.runTool(call.name, call.arguments || {}, { signal });
           toolSummaries.push(outcome.ok
             ? `${call.name}: ok`
             : `${call.name}: failed (${outcome.error.code}) — ${outcome.error.message}`);
 
           toolLog.push({ name: call.name, ok: outcome.ok });
-          wire.push({ role: 'assistant', content: res.text || `(calling ${call.name})` });
+
+          const payload = outcome.ok ? { ok: true, result: outcome.result } : { ok: false, error: outcome.error };
+          let content;
+          if (outcome.ok && typeof outcome.result === 'string') content = outcome.result;
+          else {
+            try { content = JSON.stringify(payload); } catch (_) { content = String(payload); }
+          }
           wire.push({
-            role: 'user',
-            content: `Tool result for ${call.name}:\n${JSON.stringify(outcome).slice(0, TOOL_RESULT_CHAR_LIMIT)}`
+            role: 'tool',
+            toolCallId: call.id,
+            name: call.name,
+            ok: outcome.ok,
+            content: content.slice(0, TOOL_RESULT_CHAR_LIMIT)
           });
         }
 
