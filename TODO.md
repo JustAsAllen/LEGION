@@ -20,10 +20,14 @@ The automated check suite is the source of truth for repeatable verification.
 - [x] Renderer live streaming state connected to provider deltas
 - [x] Final AI reply routed through the existing hybrid TTS path
 - [x] Tool catalogue, confirmation gate and sandbox policy
+- [x] Desktop agent tools: window list/focus/close, clipboard, screenshot, media keys, notification, session lock
+- [x] Bounded provider retry (pre-delta, honours retry-after) and native tool transcripts per adapter
+- [x] Opt-in Dynamic Island as a separate always-on-top window, with its own checks
 - [x] Memory, config, metrics and secret handling
 - [x] Procedural three-arc ring and off-main-thread sampler
 - [x] Square WebGL mark projection for widescreen layouts
 - [x] Render check asserting the live camera remains 1:1
+- [x] Reduced-motion mode, launch-at-startup toggle and explicit microphone opt-in
 - [x] Launcher checks and background-throttling fix
 - [x] Static/scope/IPC/security/data/voice/render/shell verification suite
 - [x] Packaged-build verification with host-policy-aware unsigned executable handling
@@ -46,14 +50,20 @@ The automated check suite is the source of truth for repeatable verification.
 
 ### Accessibility
 
-- [ ] Reduced-motion mode
+- [x] Reduced-motion mode
 - [ ] Keyboard-only navigation of every panel
-- [ ] Adjustable visual intensity
+- [ ] Adjustable visual intensity (`visual.themeIntensity` exists; no control)
 
 ### Startup
 
-- [ ] Launch-at-startup toggle
-- [ ] Explicit microphone opt-in guard at startup
+- [x] Launch-at-startup toggle
+- [x] Explicit microphone opt-in guard at startup
+
+### Hardening
+
+- [ ] Encrypt provider secrets at rest (currently plain text in `userData/secrets.json`)
+- [ ] Verify live model IDs (`gemini-3.8-flash`, `claude-sonnet-4-5`, `gpt-4o-mini`) against each provider
+- [ ] Allow the desktop screenshot folder to be cleaned up or configured
 
 ### Voice packs
 
@@ -75,6 +85,7 @@ The repository is intentionally self-contained at source level. Optional Piper b
     npm run check
     npm run check:fast
     npm run check:render
+    npm run check:island
     npm run build
     npm run check:package
     npm run dist

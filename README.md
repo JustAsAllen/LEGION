@@ -73,6 +73,21 @@ When the turn completes, the final accumulated reply enters the normal TTS pipel
 
 Every failed tier returns null and allows the next tier to answer. The selected tier, source, and format are preserved as provenance.
 
+### Dynamic Island (opt-in)
+
+An optional second window mirrors state that main already broadcasts: status,
+metrics, streaming reply, and quick listen/stop/cancel controls. It is off by
+default (`ui.island.enabled`), opens from the tray, `Ctrl+Alt+I`, or Settings,
+and runs the same allowlisted preload. It owns no state and never replaces the
+main shell; with it disabled the original window is unchanged.
+
+### Desktop tools
+
+Beyond files and apps, the tool registry exposes a curated desktop surface:
+window list/focus/close, clipboard read/write, a full-screen PNG in the temp
+folder, media keys, notifications, and session lock. Destructive actions (close,
+clipboard read, screenshot, lock) require explicit confirmation.
+
 ## Repository layout
 
     LEGION/
@@ -166,6 +181,7 @@ For Piper, supply a compatible piper.exe, ONNX voice model, and its sidecar meta
 | npm run check | Full source, IPC, security, data, voice, UI, render and AI-check suite |
 | npm run check:fast | Quick static/scope/IPC/security gate |
 | npm run check:render | Live WebGL checks including square projection |
+| npm run check:island | Live checks for the opt-in Dynamic Island window |
 | npm run check:package | Checks the real release/win-unpacked package |
 | npm run check:launch | Verifies the real launcher and live render loop |
 | npm run bench | Performance, heap and frame benchmark |

@@ -39,8 +39,11 @@ The renderer never directly imports fs, child_process, or network clients. Provi
 | Voice | src/main/voice/wake.js | continuous listening and wake word |
 | Tools | src/main/tools/registry.js | model-visible tool catalogue |
 | Tools | src/main/tools/sandbox.js | write roots and command policy |
+| Tools | src/main/tools/apps.js | curated application launch and window list |
+| Tools | src/main/tools/desktop.js | window focus, clipboard, screenshot, media keys, notifications, lock |
 | System | src/main/system/metrics.js | CPU/memory metrics |
 | Core | src/main/main.js | window lifecycle, state machine and IPC registration |
+| Core | src/main/island.js | opt-in Dynamic Island window, bounds and state mirror |
 
 ## 3. IPC contract
 
@@ -87,6 +90,16 @@ Three rules are enforced in `providers.js` rather than per adapter:
 - **Cancellation is wired to the socket for the whole call**, headers and body
   alike, and interrupts a pending read. Releasing the abort once headers land
   would make cancel a no-op for the rest of the stream.
+- **Retry is bounded and pre-delta only.** A rate limit, connection failure,
+  timeout, HTTP 5xx or dropped stream is retried up to three attempts with
+  `retry-after` honoured and capped exponential backoff. Once a single text
+  delta has reached the renderer the request is not replayed, because that would
+  duplicate visible output. Each retry emits a `retry` event.
+- **Tool rounds use native transcripts.** The engine sends one assistant turn
+  carrying every `toolCalls` entry, followed by `role: 'tool'` result messages.
+  Each adapter translates that shape (`tool_use`/`tool_result` for Anthropic,
+  `tool_calls`/`role: 'tool'` for OpenAI, `functionCall`/`functionResponse` for
+  Gemini) instead of flattening tool output into user prose.
 
 Every failure is a `ToolError` with a stable code, so main can report it
 without inspecting the adapter: `E_AI_AUTH`, `E_AI_RATE_LIMIT`, `E_AI_BLOCKED`,
@@ -104,6 +117,33 @@ key is read in main from the environment or `userData/secrets.json`; the
 renderer only learns whether a key is configured and which environment variable
 could supply it. A legacy saved `ollama` setting is migrated to Gemini and its
 local model and endpoint are cleared.
+
+### Dynamic Island window
+
+The Island is an optional second window, off by default (`ui.island.enabled`),
+and never a replacement shell. `src/main/island.js` owns its bounds and nothing
+else: it holds no application state, runs no tools, and mirrors what main
+already broadcasts. With the setting off, the original window and renderer are
+unchanged.
+
+    main
+      ├─ island:state ───────────► island renderer (status, expanded, pinned)
+      ├─ metrics / state / ai:event ─► both windows (send() fan-out)
+      │
+      ◄─ island:show / hide / toggle / expand / pin / command
+      ◄─ island://action ────────► main window (listen, stop, cancel, show)
+
+It is a frameless, transparent, always-on-top window anchored 24px from the
+bottom-right of the primary work area, 360px wide, with collapsed (60px) and
+expanded (232px) heights. `skipTaskbar` and `showInactive()` keep it out of the
+taskbar and out of the user's focus. It is toggled from the tray, by
+`Ctrl+Alt+I`, or from Settings.
+
+The same preload is used, so the bridge surface does not grow a second
+implementation. `handle()` accepts either the main window or the Island as a
+sender and rejects everything else; `send()` fans main events out to both
+windows. The state it displays is broadcast, not owned: if the Island is closed,
+the main process continues exactly as before.
 
 ## 4. AI turn lifecycle
 
@@ -127,6 +167,22 @@ local model and endpoint are cleared.
     renderer TTS
 
 Tool execution remains in main and is subject to the confirmation/sandbox policy.
+
+### Desktop tools
+
+`src/main/tools/desktop.js` is a curated desktop surface, not a shell escape:
+window enumeration/focus/minimize/maximize/restore/close, clipboard read and
+write, a full-screen PNG capture in the temp folder, media keys, a Windows
+notification, and session lock. Every Windows call goes through a compiled
+Win32 helper invoked with `execFile`; no user string is ever concatenated into a
+PowerShell script. Clipboard text and notification text are passed as base64,
+and window identity resolves to a numeric `hwnd` before the action runs.
+
+Approval is enforced in the registry: closing a window, reading the clipboard,
+capturing the screen and locking the session all declare a `confirm` plan, so
+they cannot run when `tools.requireConfirmation` is on unless the user approves
+the exact call in the UI. Media keys, notifications and focus changes do not
+leave the machine and run without a prompt.
 
 ## 5. Four-tier speech synthesis
 
@@ -280,10 +336,13 @@ Build products are never source-controlled.
 
 1. **Static** — syntax, scope, DOM/channel consistency.
 2. **IPC/security** — channel registration, bridge allowlist, sandbox and secrets.
-3. **Data/voice** — config, storage, TTS routing and voice-pack provenance.
+3. **Data/voice** — config, storage, TTS routing, voice-pack provenance, and the
+   desktop tool registration/confirmation/enum contract.
 4. **Live renderer** — shell behaviour, WebGL state and square camera projection.
-5. **Package** — real unpacked build and installed resource layout.
-6. **Optional live AI** — real Gemini streamed turn with `LEGION_LIVE_AI=1` and `GEMINI_API_KEY`.
+5. **Island** — the opt-in window boots, mirrors state, and issues actions
+   (`npm run check:island`, 16 checks against a live `--dev` instance).
+6. **Package** — real unpacked build and installed resource layout.
+7. **Optional live AI** — real Gemini streamed turn with `LEGION_LIVE_AI=1` and `GEMINI_API_KEY`.
 
 The default suite stays offline unless a live check is explicitly enabled.
 
@@ -294,3 +353,12 @@ The pipeline's weakest claims cannot be reached that way and are pinned on sourc
 ## 12. Data on disk
 
 Electron user data contains configuration, secrets, memory and metrics. Development data is isolated from normal user data. Project-root voicepack/ and build-time assets/piper/ are repository resources, not user secrets.
+
+`userData/secrets.json` currently stores provider keys as plain text. It is
+git-ignored and never exposed to the renderer (`ai:status` reports presence, not
+values), but it is not encrypted at rest. OS-backed secret storage (Credential
+Manager / DPAPI) is tracked as hardening work, not implemented.
+
+`desktop_screenshot` writes full-screen PNGs to
+`os.tmpdir()/legion-screens/`, outside the repository and app data. The path is
+returned to the model as tool output; the files are not cleaned up automatically.
