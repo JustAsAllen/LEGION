@@ -172,6 +172,8 @@ Full Windows distributables:
 
 Outputs go to release/. electron-builder targets both NSIS and portable Windows packages. The packaged application includes src/, assets/, voicepack/, and the optional assets/piper/ runtime under resources/piper/.
 
+On a non-elevated Windows shell the build helper may fail while extracting macOS symlinks; see the Releasing note in CONTRIBUTING.md.
+
 For Piper, supply a compatible piper.exe, ONNX voice model, and its sidecar metadata in assets/piper/. Runtime binaries/models are intentionally not fabricated or committed without compatible redistribution rights.
 
 ## Verification commands

@@ -91,6 +91,31 @@ presenting, close whatever is covering it and re-run.
 The JS heap is the meaningful leak signal. Summing RSS across the Electron
 processes double-counts large shared pages and overstates real usage.
 
+## Releasing
+
+1. Work on a branch; keep `master` green.
+2. Run the full suite plus packaging on the release commit:
+   `npm run check && npm run build && npm run check:package`.
+3. Confirm `git status` is clean. `release/`, `artifacts/` and local secrets are
+   ignored and must never be committed.
+4. Push the branch and open a pull request; do not push directly to `master` for
+   feature work.
+5. Tag the merge commit (`v1.0.0`) and create the GitHub release from that tag.
+
+`npm run build` on Windows extracts the `winCodeSign` helper, which contains
+macOS symlinks. A normal (non-elevated) shell cannot create symlinks, so the
+extraction fails with `A required privilege is not held by the client`. Either
+enable Windows Developer Mode / run the build elevated, or temporarily add
+`"signAndEditExecutable": false` to `build.win` in `package.json` for a local
+smoke test:
+
+```json
+"win": { "target": ["nsis", "portable"], "signAndEditExecutable": false }
+```
+
+Revert that line before committing. It is verification-only: release artifacts
+should keep the icon and version metadata.
+
 ## Reporting a bug
 
 The useful details are all in the failing check: the command, the assertion, and
