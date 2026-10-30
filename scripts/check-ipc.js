@@ -21,9 +21,13 @@ const path = require('path');
 const root = process.argv[2] || '.';
 const prePath = path.join(root, 'src/preload/preload.js');
 const mainPath = path.join(root, 'src/main/main.js');
+const islandPath = path.join(root, 'src/main/island.js');
 
 const pre = fs.readFileSync(prePath, 'utf8');
-const main = fs.readFileSync(mainPath, 'utf8');
+const main = [
+  fs.readFileSync(mainPath, 'utf8'),
+  fs.existsSync(islandPath) ? fs.readFileSync(islandPath, 'utf8') : ''
+].join('\n');
 
 const errors = [];
 const warnings = [];
@@ -59,7 +63,7 @@ const mainHandled = new Set([
   ...[...main.matchAll(/ipcMain\.handle\('([^']+)'/g)].map((m) => m[1])
 ]);
 const mainListened = new Set([...main.matchAll(/ipcMain\.on\('([^']+)'/g)].map((m) => m[1]));
-const mainSent = new Set([...main.matchAll(/\bsend\('([^']+)'/g)].map((m) => m[1]));
+const mainSent = new Set([...main.matchAll(/\b(?:send|sendToMain)\('([^']+)'/g)].map((m) => m[1]));
 
 /* ── duplicates ─────────────────────────────────────────────── */
 

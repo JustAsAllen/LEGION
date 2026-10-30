@@ -23,6 +23,7 @@ const { SecretStore } = require('./secrets');
 const { MemoryStore } = require('./memory');
 const { ToolManager } = require('./tools');
 const { AIEngine } = require('./ai/engine');
+const { createIslandController } = require('./island');
 const tts = require('./voice/tts');
 const stt = require('./voice/stt');
 const wake = require('./voice/wake');
@@ -45,6 +46,22 @@ const config = new ConfigStore(USER_DATA, { allowMock: isDev });
 const secrets = new SecretStore(USER_DATA);
 const memory = new MemoryStore(USER_DATA, config);
 const productivity = new (require('./tools/productivity').ProductivityStore)(path.join(USER_DATA, 'productivity.json'));
+
+const PRELOAD_PATH = path.join(__dirname, '..', 'preload', 'preload.js');
+
+const islandCtl = createIslandController({
+  config,
+  preloadPath: PRELOAD_PATH,
+  isDev,
+  onCommand: (cmd) => {
+    if (cmd === 'show') return showWindow();
+    if (cmd === 'listen' || cmd === 'stop' || cmd === 'cancel') {
+      sendToMain('island:action', { action: cmd });
+    }
+  }
+});
+
+islandCtl.onChange(() => refreshTrayMenu());
 
 /* ------------------------------------------------------------------ */
 /* Tool + AI wiring                                                    */
@@ -100,9 +117,17 @@ function setError(err) {
   setState('ERROR', lastError);
 }
 
-function send(channel, payload) {
+function sendToMain(channel, payload) {
   if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
     win.webContents.send(channel, payload);
+  }
+}
+
+function send(channel, payload) {
+  sendToMain(channel, payload);
+  const iw = islandCtl.window();
+  if (iw && !iw.isDestroyed() && iw.webContents && !iw.webContents.isDestroyed()) {
+    iw.webContents.send(channel, payload);
   }
 }
 
@@ -124,7 +149,7 @@ function createWindow() {
     titleBarStyle: 'hidden',
     transparent: false,
     webPreferences: {
-      preload: path.join(__dirname, '..', 'preload', 'preload.js'),
+      preload: PRELOAD_PATH,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -166,7 +191,7 @@ function createWindow() {
     }
   });
 
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => { win = null; if (islandCtl) islandCtl.destroy(); });
 
   // External links open in the real browser, never inside the app.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -239,14 +264,26 @@ function ensureTray() {
     );
     tray = new Tray(icon.resize({ width: 16, height: 16 }));
     tray.setToolTip('LEGION');
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: 'Show LEGION', click: () => showWindow() },
-      { label: 'Settings', click: () => showWindow('settings') },
-      { type: 'separator' },
-      { label: 'Quit LEGION', click: () => { quitting = true; app.quit(); } }
-    ]));
+    refreshTrayMenu();
     tray.on('click', () => showWindow());
   } catch (_) { tray = null; }
+}
+
+function refreshTrayMenu() {
+  if (!tray) return;
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Show LEGION', click: () => showWindow() },
+    { label: 'Settings', click: () => showWindow('settings') },
+    { type: 'separator' },
+    {
+      label: 'Dynamic Island',
+      type: 'checkbox',
+      checked: islandCtl.status().enabled,
+      click: () => islandCtl.toggle()
+    },
+    { type: 'separator' },
+    { label: 'Quit LEGION', click: () => { quitting = true; app.quit(); } }
+  ]));
 }
 
 function showWindow(panel) {
@@ -303,7 +340,10 @@ function stopMetrics() {
 
 function handle(channel, fn) {
   ipcMain.handle(channel, async (event, ...args) => {
-    if (!win || event.sender !== win.webContents) throw new Error('Rejected: unknown sender.');
+    const iw = islandCtl.window();
+    const fromMain = !!win && event.sender === win.webContents;
+    const fromIsland = !!iw && !iw.isDestroyed() && event.sender === iw.webContents;
+    if (!fromMain && !fromIsland) throw new Error('Rejected: unknown sender.');
     return fn(...args);
   });
 }
@@ -775,6 +815,14 @@ function registerIpc() {
     await shell.openExternal(u.toString());
     return { ok: true };
   });
+
+  handle('island:status', async () => islandCtl.status());
+  handle('island:show', async () => islandCtl.show());
+  handle('island:hide', async () => islandCtl.hide());
+  handle('island:toggle', async () => islandCtl.toggle());
+  handle('island:expand', async (v) => islandCtl.setExpanded(v));
+  handle('island:pin', async (v) => islandCtl.setPinned(v));
+  handle('island:command', async (name) => islandCtl.command(name));
 }
 
 /* ------------------------------------------------------------------ */
@@ -810,6 +858,7 @@ function registerGlobalShortcuts() {
   };
   tryReg('CommandOrControl+L', () => showWindow());
   tryReg('CommandOrControl+Shift+L', () => { showWindow(); send('shortcut:activate', {}); });
+  tryReg('CommandOrControl+Alt+I', () => islandCtl.toggle());
   // A silent registration failure leaves the user with a dead shortcut and no
   // explanation. The renderer may not have finished loading yet, so this rides
   // along on the app:ready payload instead of being pushed as a bare event.
@@ -829,6 +878,7 @@ if (!app.requestSingleInstanceLock() && !isDev) {
     registerIpc();
     registerAppProtocol();
     createWindow();
+    if (config.get().ui.island.enabled) islandCtl.show();
     registerGlobalShortcuts();
     applyStartupSetting();
     startMetrics();

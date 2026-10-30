@@ -103,7 +103,10 @@ const DEFAULTS = Object.freeze({
   ui: {
     panel: 'none',               // none | conversation | tools | memory | settings
     panelPosition: 'right',      // right | left
-    theme: 'legion-dark'
+    theme: 'legion-dark',
+    island: {
+      enabled: false             // the Dynamic Island is opt-in and additive
+    }
   },
 
   window: {

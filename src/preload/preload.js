@@ -25,13 +25,15 @@ const INVOKE_CHANNELS = [
   'voice:wakeStart', 'voice:wakeStop', 'voice:wakeStatus',
   'voice:captureStart', 'voice:captureStop', 'voice:captureAbort',
   'system:full', 'shell:showItem', 'shell:openPath',
-  'dialog:confirm', 'app:openExternal'
+  'dialog:confirm', 'app:openExternal',
+  'island:status', 'island:show', 'island:hide', 'island:toggle',
+  'island:expand', 'island:pin', 'island:command'
 ];
 
 const EVENT_CHANNELS = [
   'state', 'metrics', 'ai:event', 'tool:confirmation',
   'timer:fired', 'app:ready', 'window:focus', 'ui:open-panel', 'shortcut:activate',
-  'voice:wake', 'voice:captureEnd'
+  'voice:wake', 'voice:captureEnd', 'island:state', 'island:action'
 ];
 
 /**
@@ -155,6 +157,15 @@ contextBridge.exposeInMainWorld('legion', {
   },
   dialog: {
     confirm: invoke['dialog:confirm']
+  },
+  island: {
+    status: invoke['island:status'],
+    show: invoke['island:show'],
+    hide: invoke['island:hide'],
+    toggle: invoke['island:toggle'],
+    expand: invoke['island:expand'],
+    pin: invoke['island:pin'],
+    command: invoke['island:command']
   },
   on
 });

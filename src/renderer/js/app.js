@@ -466,6 +466,13 @@ class Legion {
 
     api.on('voice:wake', (p) => this.#onWake(p));
 
+    api.on('island:action', (p) => {
+      const action = p && p.action;
+      if (action === 'listen') this.pushToTalkStart();
+      else if (action === 'stop') { this.pushToTalkEnd(); this.#releaseMic(); }
+      else if (action === 'cancel') this.closeTopmost();
+    });
+
     this._statusTimer = setInterval(() => this.#paintStatus(), 3000);
     this._metricsTimer = setInterval(() => this.#pollFullMetrics(), 12000);
     window.addEventListener('beforeunload', this._dispose, { once: true });

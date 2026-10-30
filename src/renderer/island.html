@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'" />
+  <title>LEGION Island</title>
+  <link rel="stylesheet" href="styles/island.css" />
+</head>
+<body>
+  <main id="island" class="island" data-state="IDLE" data-expanded="false">
+    <header class="island-head" id="island-head">
+      <span class="island-dot" aria-hidden="true"></span>
+      <span class="island-brand">LEGION</span>
+      <span class="island-divider" aria-hidden="true"></span>
+      <span class="island-state" id="island-state">IDLE</span>
+      <span class="island-spacer"></span>
+      <span class="island-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+      <button class="island-icon" id="island-chevron" title="Expand" aria-label="Expand island">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>
+      </button>
+    </header>
+
+    <section class="island-body">
+      <p class="island-caption" id="island-caption">Ready when you are.</p>
+      <div class="island-actions">
+        <button class="island-btn is-primary" id="island-mic">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="2.5" width="4" height="7" rx="2"/><path d="M3.5 8a4.5 4.5 0 0 0 9 0M8 12.5V14"/></svg>
+          <span>Talk</span>
+        </button>
+        <button class="island-btn" id="island-open">Open LEGION</button>
+        <button class="island-btn is-icon" id="island-pin" title="Keep expanded" aria-label="Keep expanded" aria-pressed="false">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 2.5l4 4-2 1-2.5 2.5L8 13l-1-1-3.5 2 2-3.5-1-1 2.5-2.5 2.5-2.5 1-2z"/></svg>
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="js/island.js"></script>
+</body>
+</html>
