@@ -66,7 +66,9 @@ function validate(schema, value, pathStr) {
     }
     for (const key of Object.keys(value)) {
       if (key in schema.properties) continue;
-      if (schema.additionalProperties === false) continue;
+      if (schema.additionalProperties === false || schema.additionalProperties === undefined) {
+        throw new ValidationError(`"${p}.${key}" is not an accepted argument.`);
+      }
       if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
         out[key] = validate(schema.additionalProperties, value[key], `${p}.${key}`);
       }

@@ -93,6 +93,7 @@ let currentState = 'IDLE';
 let liveCaption = '';
 let liveInterim = false;
 let streamingText = '';
+let toolStatus = '';
 let streamEl = null;
 let awaitingReply = false;
 let lastError = '';
@@ -264,9 +265,9 @@ function renderMode() {
 }
 
 function renderLive() {
-  const text = streamingText || liveCaption || CAPTIONS[currentState] || CAPTIONS.IDLE;
+  const text = streamingText || toolStatus || liveCaption || CAPTIONS[currentState] || CAPTIONS.IDLE;
   captionEl.textContent = text;
-  captionEl.classList.toggle('interim', liveInterim && !streamingText);
+  captionEl.classList.toggle('interim', liveInterim && !streamingText && !toolStatus);
   inlineEl.textContent = text;
   inlineEl.title = text;
   const label = LABELS[currentState] || currentState;
@@ -532,6 +533,20 @@ api.on('island:relay', (p) => {
         awaitingReply = false;
       }
     }
+    return;
+  }
+
+  if (p.kind === 'tool') {
+    toolStatus = p.phase === 'start'
+      ? `Running ${String(p.name || 'desktop action')}…`
+      : `${String(p.name || 'Desktop action')}: ${p.ok === false ? 'failed' : 'complete'}`;
+    if (p.phase === 'end') {
+      setTimeout(() => {
+        toolStatus = '';
+        renderLive();
+      }, 1800);
+    }
+    renderLive();
     return;
   }
 

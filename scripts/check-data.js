@@ -196,6 +196,10 @@ const check = async (label, fn) => {
     if (!badMedia || badMedia.code !== 'E_VALIDATION') throw new Error('media enum was not enforced: ' + (badMedia && badMedia.code));
     ok('desktop_media rejects unknown keys before running', 'E_VALIDATION');
 
+    const badArgs = await tm.execute('system_memory', { unexpected: true }).then(() => null, (e) => e);
+    if (!badArgs || badArgs.code !== 'E_VALIDATION') throw new Error('unknown tool arguments were accepted: ' + (badArgs && badArgs.code));
+    ok('tools reject unknown arguments', 'E_VALIDATION');
+
     ok('list() requiresConfirmation present', 'ok');
   } catch (e) { bad('ToolManager', e); }
 

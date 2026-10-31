@@ -75,7 +75,52 @@ class AIEngine {
     const st = this.status();
     if (st.provider === 'none') return { provider: 'none', online: false, reason: 'No provider configured.' };
     if (st.provider === 'mock') return { provider: 'mock', online: true, mock: true, keyConfigured: false, keySource: 'none' };
-    return { provider: st.provider, online: st.ready, keyConfigured: st.secret.configured, keySource: st.secret.source };
+    if (!st.ready) {
+      return {
+        provider: st.provider,
+        online: false,
+        keyConfigured: st.secret.configured,
+        keySource: st.secret.source,
+        reason: st.reason
+      };
+    }
+
+    // Validate the configured endpoint and credentials with a minimal request.
+    // This stays in the main process, never enters conversation memory, and
+    // uses the provider adapter so custom base URLs and provider auth remain
+    // covered by the same HTTP/error handling as a real turn.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+    try {
+      const provider = this.provider();
+      const result = await provider.chat({
+        system: 'Reply with a single word.',
+        messages: [{ role: 'user', content: 'ping' }],
+        tools: [],
+        temperature: 0,
+        maxTokens: 1,
+        signal: controller.signal
+      });
+      return {
+        provider: st.provider,
+        online: true,
+        keyConfigured: st.secret.configured,
+        keySource: st.secret.source,
+        model: result.model || this.config.model || null
+      };
+    } catch (err) {
+      const cancelled = controller.signal.aborted;
+      return {
+        provider: st.provider,
+        online: false,
+        keyConfigured: st.secret.configured,
+        keySource: st.secret.source,
+        code: cancelled ? 'E_AI_TIMEOUT' : (err.code || 'E_AI_CONN'),
+        reason: cancelled ? 'Provider validation timed out.' : (err.message || 'Provider validation failed.')
+      };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   cancel() {

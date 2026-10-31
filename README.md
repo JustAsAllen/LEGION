@@ -1,230 +1,225 @@
 # LEGION
 
-> **A personal AI intelligence living inside your computer.**
+LEGION is a Windows-first Electron desktop assistant: a calm, provider-independent AI conversation layer connected to real voice services, approved desktop tools, and the GLY visual system.
 
-LEGION is a Windows-first Electron desktop assistant with a strict main/renderer security boundary, real-time WebGL visuals, voice input/output, provider-independent AI, streamed Gemini responses, four-tier TTS, tool execution with confirmation, and production packaging through electron-builder.
+LEGION is not a separate chatbot. The existing Electron shell, preload bridge, main-process services, renderer state, voice pipeline, and optional Dynamic Island form one application.
 
-## Executive summary
+## Vision
 
-LEGION is built as a self-contained desktop runtime rather than a web wrapper. The renderer owns presentation and interaction. The main process owns privileged work, AI providers, filesystem/network access, memory, tools, and voice orchestration. Preload exposes only an explicit IPC surface.
+LEGION should be useful on the desktop without becoming an unrestricted command runner. AI requests are translated into typed tools, validated in the main process, constrained by sandbox and allowlists, and confirmed when an action is sensitive.
 
-The production path is:
+## Features
 
-    user input → renderer → preload → main/AI
-               → streamed ai:event deltas
-               → final reply → four-tier TTS → renderer audio
+- Streaming Gemini, OpenAI, and Anthropic conversations.
+- Context-aware session memory and optional long-term memory.
+- Main-process-only API keys and provider connections.
+- Push-to-talk, continuous listening, and optional wake-word recognition.
+- Voice pack, Edge neural, Piper, and Windows SAPI speech output tiers.
+- Curated application, URL, file, system, window, clipboard, media, notification, and lock tools.
+- Explicit confirmation for sensitive or destructive actions.
+- CPU, memory, battery, storage, network, process, and uptime information.
+- Optional Dynamic Island that mirrors the main shell.
+- GLY particle mark rendered with WebGL and measured audio response.
 
-The visual path is equally deliberate: a procedurally generated three-segment ring is sampled in a Web Worker and rendered through WebGL with a square camera projection, so the mark stays circular on 16:9 displays.
+## Screenshots
 
-## Tech stack
+Visual references are available in [`artifacts/`](./artifacts). The live render checks also write screenshots there. Generated artifacts are ignored by Git.
 
-| Layer | Technology |
-|---|---|
-| Desktop runtime | Electron 33 |
-| Main process | Node.js / CommonJS |
-| Renderer | Vanilla ES modules, DOM, WebGL2, Web Audio |
-| 3D/rendering | Three.js, vendored for the renderer |
-| AI | Provider-independent engine + Gemini/OpenAI/Anthropic adapters |
-| Streaming | Gemini SSE, OpenAI SSE and Anthropic event streams |
-| Voice | Voice pack → Edge neural → Piper → Windows SAPI |
-| IPC | Electron contextBridge + explicit channel allowlist |
-| Packaging | electron-builder, NSIS + portable Windows targets |
-| Verification | Acorn static checks + live Electron/shell/render/package checks |
+## Dynamic Island
+
+The Island is disabled by default and is additive rather than a second application. It mirrors state, captions, streamed text, user messages, measured audio, and tool progress from the main renderer. It can be positioned on supported displays, expanded, pinned, collapsed automatically, and used for listen, chat, stop, and cancel actions.
+
+## GLY visual system
+
+The main shell and Island use the same procedural three-arc particle mark, sampler worker, shaders, theme table, and WebGL stage. The renderer keeps the camera projection matched to the drawing-buffer aspect so the mark remains circular on widescreen displays. Reduced-motion, theme, bloom, scanline, and adaptive-quality settings are supported.
+
+## AI architecture
+
+The renderer sends a turn through the explicit preload bridge. The main process builds bounded conversation context, creates the selected provider adapter, streams deltas through `ai:event`, executes native tool rounds through the registry, appends the final response to memory, and hands speech to the existing TTS pipeline.
+
+Provider adapters share one contract for messages, tools, usage, models, streaming, timeouts, retries, and cancellation. Provider failures use stable error codes. There is no hidden local provider fallback.
+
+## Supported AI providers
+
+- **Gemini** — default; API key `GEMINI_API_KEY`; streaming and native function calls.
+- **OpenAI** — API key `OPENAI_API_KEY`; streaming and native function calls.
+- **Anthropic** — API key `ANTHROPIC_API_KEY`; streaming and native tool use.
+- **Development mock** — available only in development builds and never in production.
+
+## Voice input and output
+
+Microphone capture is explicitly user initiated unless the user enables the opt-in launch setting. Renderer audio capture uses browser permission handling, echo cancellation, noise suppression, automatic gain control, VAD, and a selected input where supported. Main performs recognition with optional Whisper or Windows System.Speech.
+
+Speech output uses this fallback order:
+
+1. Exact voice-pack clip.
+2. Microsoft Edge neural voice when `ttsMode` is `auto`.
+3. Optional local Piper runtime/model.
+4. Windows SAPI.
+
+Speech rate, volume, mute, cancellation, continuous listening, and wake-word settings are exposed in Settings.
+
+## Desktop agent capabilities
+
+The tool registry includes:
+
+- `system_*` tools for CPU, RAM, battery, storage, network, processes, uptime, and full status.
+- `apps_*` tools for curated applications, URLs, paths, and visible windows.
+- `files_*` tools constrained by the configured sandbox roots.
+- `desktop_*` tools for windows, clipboard, screenshots, media keys, notifications, and session lock.
+- `web_*`, `productivity_*`, and opt-in `dev_*` tools.
+
+Tools have identifiers, descriptions, JSON-like schemas, validation, categories, risk levels, handlers, audit records, timeouts, and cancellation. The AI never receives unrestricted shell access.
+
+## Technology stack
+
+- Electron 33 and Node.js CommonJS main process.
+- Vanilla ES-module renderer, DOM, WebGL2, and Web Audio.
+- Vendored Three.js renderer module.
+- `systeminformation` for host metrics.
+- `msedge-tts` for online speech.
+- electron-builder for NSIS and portable Windows packaging.
 
 ## Architecture
 
-    ┌──────────────── RENDERER ────────────────┐
-    │ UI · WebGL · Web Audio · state           │
-    │ live AI text + panels + visual stages    │
-    └──────────────────┬───────────────────────┘
-                       │ explicit IPC
-                ┌──────▼──────┐
-                │   PRELOAD   │
-                │ allowlisted │
-                └──────┬──────┘
-                       │
-    ┌──────────────────▼───────────────────────┐
-    │                  MAIN                    │
-    │ state · AI · tools · voice · memory     │
-    │ filesystem · network · OS integration   │
-    └──────────────┬────────────────┬──────────┘
-                   │                │
-              AI providers       TTS engine
-                   │                │
-          Gemini/OpenAI/      1. Voice pack
-          Anthropic            2. Edge neural
-                               3. Piper local
-                               4. Windows SAPI
+See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for process boundaries, IPC contracts, AI streaming, voice pipelines, tools, and rendering details.
 
-### Streaming AI
+```text
+renderer UI/state/audio
+        │ explicit allowlisted IPC
+preload contextBridge
+        │
+main lifecycle/state/AI/memory/tools/voice/system services
+        ├── provider adapters
+        ├── curated tool registry and sandbox
+        └── STT/TTS services
+```
 
-The renderer submits turns through the ai:chat channel. Main owns the provider connection and emits provider text deltas through the existing ai:event channel. The renderer accumulates and displays those deltas live.
+## Folder structure
 
-Gemini is the default provider. It streams server-sent events through the same `ai:event` channel, sends the registry's tool schemas in Gemini's uppercase OpenAPI form, and reports blocked prompts, auth failures and rate limits as typed errors. An unset provider is refused with `E_NO_PROVIDER`; there is no hidden local fallback.
+```text
+src/main/ai/          AI engine, provider adapters, personality
+src/main/tools/       registry, sandbox, apps, desktop, files, system tools
+src/main/voice/       STT, TTS, wake word, Piper, Edge, voice pack
+src/main/system/      host metrics
+src/main/main.js      Electron lifecycle, state machine, IPC handlers
+src/main/island.js    Dynamic Island window controller
+src/preload/          sole renderer/main bridge
+src/renderer/js/      application, state, audio, panels, Island mirror
+src/renderer/visuals/ GLY stage, sampler, particle field, logo model
+src/renderer/styles/  shell and panel styles
+scripts/              static, security, AI, voice, shell, render, and package checks
+voicepack/            shipped prerecorded clips and manifest
+assets/piper/         optional user-supplied Piper runtime/model location
+docs/                 architecture and operational documentation
+```
 
-When the turn completes, the final accumulated reply enters the normal TTS pipeline. Streaming changes the response presentation, not the voice/security architecture.
+There is currently no `src/shared`, `tests`, or TypeScript tree; the repository uses runtime JavaScript checks and Electron integration checks instead.
 
-### Four-tier voice engine
+## Installation
 
-1. **Voice pack** — exact prerecorded phrases, instant and offline.
-2. **Edge neural** — online neural synthesis when the selected mode permits network use.
-3. **Piper** — local neural TTS when a compatible runtime/model is present.
-4. **Windows SAPI** — final system fallback.
+Requirements:
 
-Every failed tier returns null and allows the next tier to answer. The selected tier, source, and format are preserved as provenance.
+- Windows 10 or 11.
+- Node.js 18 or newer.
+- npm.
+- A microphone for speech input.
 
-### Dynamic Island (opt-in)
+```powershell
+git clone https://github.com/JustAsAllen/LEGION.git
+Set-Location LEGION
+npm install
+```
 
-An optional second window mirrors state that main already broadcasts: status,
-metrics, streaming reply, and quick listen/stop/cancel controls. It is off by
-default (`ui.island.enabled`), opens from the tray, `Ctrl+Alt+I`, or Settings,
-and runs the same allowlisted preload. It owns no state and never replaces the
-main shell; with it disabled the original window is unchanged.
+## Development setup
 
-The pill defaults to the top centre of the primary display (380x64, expanding
-to 380x480). Settings can move it to any of six positions on the primary
-display, the display under the cursor, or a specific display index; bounds stay
-inside that display's work area and follow monitor/DPI changes. Optional
-auto-collapse returns it to the pill after a configurable idle time unless it is
-pinned. `Ctrl+Alt+Space` opens it with the input focused.
+```powershell
+npm run dev
+```
 
-The pill carries a 30 px version of LEGION's GLY particle mark, rendered by the
-same stage, sampler, shaders and theme table as the main shell — not a second
-logo or a second animation engine. It reacts to genuinely measured microphone
-and playback levels while listening or speaking, stays subtle while idle, and
-stops rendering entirely while the window is hidden. Reduced motion, theme
-accent and glow follow the shell immediately.
+The development build enables the local mock provider and mock TTS only for testing. For normal use, configure a real provider in Settings.
 
-### Desktop tools
+## Environment variables
 
-Beyond files and apps, the tool registry exposes a curated desktop surface:
-window list/focus/close, clipboard read/write, a full-screen PNG in the temp
-folder, media keys, notifications, and session lock. Destructive actions (close,
-clipboard read, screenshot, lock) require explicit confirmation.
+Copy [`.env.example`](./.env.example) for reference. LEGION does not automatically load `.env` files.
 
-## Repository layout
+```powershell
+$env:GEMINI_API_KEY = '<key>'
+$env:GEMINI_MODEL = 'gemini-3.5-flash'
+```
 
-    LEGION/
-    ├─ assets/
-    │  ├─ logo.svg
-    │  ├─ screenshot-idle.png
-    │  └─ piper/                  optional local Piper runtime/model
-    ├─ src/
-    │  ├─ main/
-    │  │  ├─ ai/                  engine, providers, personality
-    │  │  ├─ system/              host metrics
-    │  │  ├─ tools/               registry, sandbox, tool groups
-    │  │  └─ voice/               TTS, STT, wake, Edge, Piper, packs
-    │  ├─ preload/                 sole renderer/main bridge
-    │  └─ renderer/
-    │     ├─ js/                   app, state, panels, audio
-    │     ├─ styles/               renderer CSS
-    │     ├─ visuals/              WebGL stage, ring, particles, worker
-    │     └─ vendor/               vendored Three.js
-    ├─ scripts/                    checks and benchmark tooling
-    ├─ voicepack/                  shipped prerecorded clips + manifest
-    ├─ ARCHITECTURE.md
-    ├─ CONTRIBUTING.md
-    ├─ TODO.md
-    └─ package.json
+Supported variables are `GEMINI_API_KEY`, `GEMINI_MODEL`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY`. Keys may also be entered in Settings and are stored in Electron `userData/secrets.json`; values never cross into the renderer.
 
-Build products never belong in source control: release/, dist/, win-unpacked/, logs, coverage, and local secrets are ignored.
+## AI configuration
 
-## Quickstart
+Choose the provider and model in Settings. The selected provider must have a configured key. Use **Test connection** to perform a real main-process provider validation. The optional live Gemini check is:
 
-### Requirements
+```powershell
+$env:LEGION_LIVE_AI = '1'
+$env:GEMINI_API_KEY = '<key>'
+npm run check:ai
+```
 
-- Windows 10/11
-- Node.js 18+
-- npm
-- A microphone for STT/voice features
+## Voice configuration
 
-### Install
+Use Settings for voice source mode (`auto`, `offline`, or `pack-only`), voice name, rate, volume, microphone behavior, continuous mode, and wake word. Piper is optional: place a compatible `piper.exe`, ONNX model, and required sidecar metadata in `assets/piper/` for development or the packaged resource location.
 
-    git clone https://github.com/JustAsAllen/LEGION.git
-    cd LEGION
-    npm install
+## Running LEGION
 
-### Run
+```powershell
+npm start
+npm run dev
+```
 
-    npm start
+The Windows launchers are [`Launch LEGION.bat`](./Launch%20LEGION.bat) and [`Launch LEGION.vbs`](./Launch%20LEGION.vbs).
 
-Development with DevTools:
+## Building and Windows packaging
 
-    npm run dev
+```powershell
+npm run build   # unpacked build in release/
+npm run dist    # NSIS and portable Windows targets
+```
 
-You can also double-click Launch LEGION.vbs for a silent launch or Launch LEGION.bat for a visible console.
+electron-builder includes `src/`, `assets/`, `voicepack/`, and `package.json`, and copies voice packs and optional Piper resources. Windows policy or signing restrictions can prevent launching unsigned local artifacts; see [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md).
 
-### Verify
+## Troubleshooting
 
-Normal hermetic verification:
+- **No provider:** select a provider and configure its key in Settings.
+- **Provider auth failure:** check the key and run **Test connection**.
+- **No microphone:** grant Windows microphone permission and verify an input device.
+- **No recognition:** install a Windows speech language or configure a working Whisper runtime/model.
+- **No speech output:** use `offline` mode to avoid network dependence and verify a SAPI voice is installed.
+- **Piper unavailable:** Piper is optional; LEGION falls through to SAPI.
+- **Build blocked by symlinks/signing policy:** enable Windows Developer Mode or use the verification guidance in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
-    npm run check
+## Security
 
-Fast static/security gate:
+Renderer pages run with context isolation, sandboxing, node integration disabled, and web security enabled. Preload exposes named channels only. Secrets stay in main. File paths are sandboxed and symlink-checked. Applications are curated. Tool actions are validated, audited, cancellable, and confirmed according to risk.
 
-    npm run check:fast
+See [`docs/SECURITY.md`](./docs/SECURITY.md).
 
-Optional live Gemini verification:
+## Testing
 
-    LEGION_LIVE_AI=1
-    GEMINI_API_KEY=<your-key>
-    GEMINI_MODEL=gemini-3.5-flash
-    npm run check:ai
+```powershell
+npm run check          # full suite
+npm run check:fast     # static, IPC, security
+npm run check:ai       # provider and tool-loop checks
+npm run check:voice    # real voice pipeline checks
+npm run check:shell    # renderer shell and Island behavior
+npm run check:render   # WebGL/render checks
+npm run check:package  # packaged-content checks
+```
 
-The live AI check is skipped unless explicitly enabled.
+The suite distinguishes real hardware/network checks from development-only mock checks. Do not treat a skipped live provider or unavailable Piper runtime as verified.
 
-### Build
+## Roadmap
 
-Unpacked production build:
+Current remaining work is tracked in [`TODO.md`](./TODO.md), including encrypted secret storage, broader accessibility, Piper runtime verification, voice-pack management, and release signing.
 
-    npm run build
+## Contribution guidelines
 
-Full Windows distributables:
-
-    npm run dist
-
-Outputs go to release/. electron-builder targets both NSIS and portable Windows packages. The packaged application includes src/, assets/, voicepack/, and the optional assets/piper/ runtime under resources/piper/.
-
-On a non-elevated Windows shell the build helper may fail while extracting macOS symlinks; see the Releasing note in CONTRIBUTING.md.
-
-For Piper, supply a compatible piper.exe, ONNX voice model, and its sidecar metadata in assets/piper/. Runtime binaries/models are intentionally not fabricated or committed without compatible redistribution rights.
-
-## Verification commands
-
-| Command | Purpose |
-|---|---|
-| npm run check | Full source, IPC, security, data, voice, UI, render and AI-check suite |
-| npm run check:fast | Quick static/scope/IPC/security gate |
-| npm run check:render | Live WebGL checks including square projection |
-| npm run check:island | Live checks for the opt-in Dynamic Island window |
-| npm run check:package | Checks the real release/win-unpacked package |
-| npm run check:launch | Verifies the real launcher and live render loop |
-| npm run bench | Performance, heap and frame benchmark |
-| npm run dist | NSIS + portable distributables |
-
-check:package is host-policy aware. If Windows blocks an unsigned test executable, LEGION_ALLOW_UNSIGNED_PACKAGE_CHECK=1 permits static package validation while still reporting that runtime launch was not verified.
-
-## Voice packs
-
-voicepack/manifest.json maps exact phrases to .wav or .mp3 clips. A pack hit always wins before synthesis. See voicepack/README.md for the format.
-
-## Security model
-
-- Renderer has no direct Node.js filesystem, process, or network access.
-- Secrets stay in main and never cross IPC as values.
-- Preload exposes explicit allowlisted operations only.
-- Tool execution uses sandbox roots and command allowlists.
-- Shell path operations re-check traversal and symlinks.
-- AI provider connections remain in main.
-- High-impact tools pass through confirmation.
-
-## Documentation
-
-- **ARCHITECTURE.md** — process boundaries, IPC, AI streaming, voice tiers, renderer pipeline and packaging.
-- **CONTRIBUTING.md** — development conventions and verification workflow.
-- **TODO.md** — implementation status and remaining release/accessibility work.
+Read [`CONTRIBUTING.md`](./CONTRIBUTING.md) before changing code. Preserve the main/renderer boundary, use the existing tool and IPC patterns, add checks for behavior changes, and do not edit the vendored Three.js file.
 
 ## License
 
-MIT
+LEGION is licensed under the MIT license. Optional Piper binaries and voice models must be supplied only when their redistribution terms permit it.

@@ -673,10 +673,12 @@ class Legion {
     } else if (ev.type === 'tool') {
       if (p.phase === 'start') {
         this.toolLog.unshift({ name: p.name, ok: true, summary: 'running…', at: new Date().toISOString(), ms: 0, risk: p.risk });
+        this.#relay({ kind: 'tool', phase: 'start', name: p.name });
         this.emit('toollog');
       } else if (p.phase === 'end') {
         const e = this.toolLog.find((x) => x.name === p.name && x.summary === 'running…');
         if (e) { e.ok = p.ok !== false; e.summary = p.summary || (p.ok === false ? p.error : 'done'); e.ms = p.ms || 0; }
+        this.#relay({ kind: 'tool', phase: 'end', name: p.name, ok: p.ok !== false });
         this.emit('toollog');
       }
     } else if (ev.type === 'error') {
