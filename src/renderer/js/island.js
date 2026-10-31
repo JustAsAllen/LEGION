@@ -7,10 +7,19 @@
  * intents (chat, listen, stop, settings, open) back through the island bridge,
  * so there is never a second AI loop or a second voice pipeline. It has no
  * Node access and no provider configuration.
+ *
+ * The GLY mark is the same stage, sampler and shaders the shell uses. A
+ * BrowserWindow necessarily owns its own WebGL context, so the rule is one
+ * stage per island window: created once on first paint, paused whenever the
+ * window is hidden, and disposed with the page.
  */
+
+import { LogoStage } from '../visuals/stage.js';
+import { LogoLoader } from '../visuals/logo-loader.js';
 
 const api = window.legion;
 const root = document.getElementById('island');
+const markEl = document.getElementById('island-mark');
 const stateEl = document.getElementById('island-state');
 const inlineEl = document.getElementById('island-inline');
 const captionEl = document.getElementById('island-caption');
@@ -28,12 +37,23 @@ const input = document.getElementById('island-input');
 const sendBtn = document.getElementById('island-send');
 
 const THEMES = {
-  'legion-dark': '#35c8ff',
-  abyss: '#35c8ff',
-  ember: '#ff7a45',
-  mint: '#3ee2a4',
-  mono: '#c8d2e0'
+  'legion-dark': { accent: '#35c8ff', glow: 1.0, scan: 0.5 },
+  abyss:         { accent: '#35c8ff', glow: 1.0, scan: 0.5 },
+  ember:         { accent: '#ff7a45', glow: 1.1, scan: 0.42 },
+  mint:          { accent: '#3ee2a4', glow: 0.95, scan: 0.4 },
+  mono:          { accent: '#c8d2e0', glow: 0.8, scan: 0.3 }
 };
+
+/**
+ * The island's surface is a fraction of the shell's area, so the tier whose
+ * density matches it is LOW. The sampler, shaders and quality system are the
+ * same; only the instance budget is sized for the box it fills. The field's
+ * own floor (600) keeps the ring dense at 30 px.
+ */
+const ISLAND_CLOUD = 6000;
+const ISLAND_QUALITY = 'low';
+const ISLAND_PARTICLE_SCALE = 0.35;
+const IDLE_FRAME_MS = 1000 / 30;
 
 const CAPTIONS = {
   OFFLINE: 'Offline. Open LEGION to reconnect.',
@@ -78,6 +98,17 @@ let awaitingReply = false;
 let lastError = '';
 let stateSynced = false;
 
+/* GLY mark lifecycle. One stage, one canvas, one sampler. */
+let stage = null;
+let markLoader = null;
+let markRaf = 0;
+let markReady = false;
+let markFailed = false;
+let markLastFrame = 0;
+let markVisible = false;
+let audioFrames = 0;
+const visual = { accent: THEMES.abyss.accent, glow: THEMES.abyss.glow, themeIntensity: 1, reducedMotion: false, bloom: true };
+
 function hexToRgba(hex, alpha) {
   const h = String(hex || '').replace('#', '');
   if (h.length !== 6) return `rgba(53, 200, 255, ${alpha})`;
@@ -85,11 +116,133 @@ function hexToRgba(hex, alpha) {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
-function setAccent(hex) {
-  const accent = THEMES[hex] || THEMES.abyss;
-  document.documentElement.style.setProperty('--accent', accent);
-  document.documentElement.style.setProperty('--accent-dim', hexToRgba(accent, 0.18));
+/**
+ * Accept either a theme key (what config stores) or a resolved hex colour
+ * (what the main renderer relays when the theme changes).
+ */
+function setAccent(themeOrHex, glow) {
+  const direct = typeof themeOrHex === 'string' && themeOrHex.startsWith('#');
+  const t = THEMES[themeOrHex] || (direct
+    ? { accent: themeOrHex, glow: glow === undefined ? 1 : glow }
+    : THEMES.abyss);
+  document.documentElement.style.setProperty('--accent', t.accent);
+  document.documentElement.style.setProperty('--accent-dim', hexToRgba(t.accent, 0.18));
+  visual.accent = t.accent;
+  visual.glow = t.glow;
+  if (stage) stage.setAccent(t.accent, t.glow);
 }
+
+/* ── GLY mark ───────────────────────────────────────────────── */
+
+function prefersReducedMotion() {
+  try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (_) { return false; }
+}
+
+function markShouldRun() {
+  return !!stage && markVisible && !document.hidden;
+}
+
+function stopMarkLoop() {
+  if (markRaf) cancelAnimationFrame(markRaf);
+  markRaf = 0;
+}
+
+function startMarkLoop() {
+  if (markRaf || !markShouldRun()) return;
+  markLastFrame = performance.now();
+  markRaf = requestAnimationFrame(tickMark);
+}
+
+/**
+ * The island runs its own loop instead of `stage.start()` so it can own the
+ * frame policy: full rate while a turn is live, half rate while idle, and no
+ * frames at all while the window is hidden. `stage.frame(dt)` advances the
+ * same easing and uniforms the shell uses.
+ */
+function tickMark(now) {
+  markRaf = 0;
+  if (!stage || !markVisible || document.hidden) return;
+  const dt = Math.min(0.05, Math.max(0, (now - markLastFrame) / 1000));
+  const active = currentState !== 'IDLE' && currentState !== 'OFFLINE';
+  const minStep = active ? 0 : IDLE_FRAME_MS / 1000;
+  if (dt >= minStep) {
+    markLastFrame = now;
+    stage.frame(dt);
+  }
+  markRaf = requestAnimationFrame(tickMark);
+}
+
+async function ensureMark() {
+  if (stage || markFailed || !markEl) return;
+  markLoader = new LogoLoader();
+  try {
+    stage = new LogoStage(markEl, {
+      quality: ISLAND_QUALITY,
+      particleScale: ISLAND_PARTICLE_SCALE,
+      themeIntensity: visual.themeIntensity,
+      reducedMotion: visual.reducedMotion || prefersReducedMotion(),
+      bloom: visual.bloom,
+      adaptive: false,
+      parallax: false,
+      scanlines: false
+    });
+  } catch (_) {
+    markFailed = true;
+    markLoader.cancel();
+    markLoader = null;
+    root.dataset.gly = 'fallback';
+    return;
+  }
+
+  stage.setAccent(visual.accent, visual.glow);
+  stage.setThemeIntensity(visual.themeIntensity);
+  stage.setState(currentState);
+
+  let cloud;
+  try {
+    cloud = await markLoader.generate(ISLAND_CLOUD);
+  } catch (_) {
+    markFailed = true;
+    markLoader = null;
+    try { stage.dispose(); } catch (_) { /* already gone */ }
+    stage = null;
+    root.dataset.gly = 'fallback';
+    return;
+  }
+
+  // The page may have been torn down while the worker was sampling.
+  if (!stage) return;
+  markLoader = null;
+  stage.setCloud(cloud);
+  markReady = true;
+  root.dataset.gly = 'ready';
+  stage.frame(0.016);
+  startMarkLoop();
+}
+
+function disposeMark() {
+  stopMarkLoop();
+  markVisible = false;
+  if (markLoader) { try { markLoader.cancel(); } catch (_) { /* ignore */ } }
+  markLoader = null;
+  const s = stage;
+  stage = null;
+  markReady = false;
+  if (s) { try { s.dispose(); } catch (_) { /* ignore */ } }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopMarkLoop();
+  else startMarkLoop();
+});
+
+window.addEventListener('pagehide', disposeMark, { once: true });
+
+try {
+  window.matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', (e) => {
+    if (stage) stage.setReducedMotion(!!e.matches || visual.reducedMotion);
+  });
+} catch (_) { /* older Chromium: the media query is still read at boot */ }
 
 /* ── layout ─────────────────────────────────────────────────── */
 
@@ -155,6 +308,10 @@ function setState(next, detail) {
 
   renderMode();
   renderLive();
+
+  // Only real transitions retarget the mark; re-applying the same state would
+  // restart the boot timing and pin every easing target to the current instant.
+  if (stage && stage.state !== state) stage.setState(state);
 }
 
 /* ── transcript ─────────────────────────────────────────────── */
@@ -259,9 +416,42 @@ function applyStatus(s) {
   if (!s) return;
   expanded = !!s.expanded;
   pinned = !!s.pinned;
+  if (typeof s.visible === 'boolean') {
+    markVisible = s.visible;
+    if (markVisible) startMarkLoop();
+    else stopMarkLoop();
+  }
   renderExpanded();
   renderMode();
   renderLive();
+}
+
+/** Apply the mark-relevant half of the shell's visual policy. */
+function applyVisual(v) {
+  if (!v) return;
+  if (v.accent) setAccent(v.accent, v.glow);
+  if (v.themeIntensity !== undefined) {
+    visual.themeIntensity = Math.max(0.15, Math.min(1.6, Number(v.themeIntensity) || 1));
+  }
+  if (typeof v.reducedMotion === 'boolean') visual.reducedMotion = v.reducedMotion;
+  if (typeof v.bloom === 'boolean') visual.bloom = v.bloom;
+  if (!stage) return;
+  stage.setThemeIntensity(visual.themeIntensity);
+  stage.setReducedMotion(visual.reducedMotion || prefersReducedMotion());
+  stage.opts.bloom = visual.bloom;
+}
+
+/**
+ * Measured microphone or playback levels only. A relayed payload is already
+ * 0..1 from the shell's analysers; anything out of range is clamped rather
+ * than trusted, and nothing here synthesises activity of its own.
+ */
+function applyAudio(p) {
+  if (!stage) return;
+  const n = (v) => Math.max(0, Math.min(1, Number(v) || 0));
+  audioFrames++;
+  const mode = p.mode === 'speaking' ? 'speaking' : p.mode === 'listening' ? 'listening' : 'idle';
+  stage.setAudio({ low: n(p.low), mid: n(p.mid), high: n(p.high), energy: n(p.energy) }, mode);
 }
 
 /* ── wiring ─────────────────────────────────────────────────── */
@@ -306,6 +496,16 @@ api.on('state', (p) => { if (p) { stateSynced = true; setState(p.state, p.detail
 
 api.on('island:relay', (p) => {
   if (!p || !p.kind) return;
+
+  if (p.kind === 'audio') {
+    applyAudio(p);
+    return;
+  }
+
+  if (p.kind === 'visual') {
+    applyVisual(p);
+    return;
+  }
 
   if (p.kind === 'state') {
     if (p.state) { stateSynced = true; setState(p.state, p.detail); }
@@ -362,8 +562,19 @@ api.on('island:state', applyStatus);
 /* boot ──────────────────────────────────────────────────────── */
 
 api.config.get()
-  .then((c) => { if (c && c.ui) setAccent(c.ui.theme); })
-  .catch(() => setAccent('abyss'));
+  .then((c) => {
+    // `config:get` returns { settings, secret, ... }; reading `c.ui` here hid
+    // the user's theme and left the island on the default accent.
+    const s = (c && c.settings) || {};
+    setAccent(s.ui?.theme || 'abyss');
+    applyVisual({
+      themeIntensity: s.visual?.themeIntensity ?? 1,
+      reducedMotion: !!s.visual?.reducedMotion,
+      bloom: s.visual?.bloom !== false
+    });
+  })
+  .catch(() => setAccent('abyss'))
+  .finally(() => ensureMark());
 
 api.app.state()
   .then((r) => {
@@ -381,3 +592,39 @@ api.island.status()
 renderExpanded();
 renderMode();
 renderLive();
+
+/**
+ * Read-only mark diagnostics, mirroring `window.legionApp` in the shell. It
+ * lets the live harness prove the context is alive, the loop is paused while
+ * the window is hidden, and the particle budget matches this surface.
+ */
+window.legionIsland = {
+  mark() {
+    const canvas = markEl ? markEl.querySelector('canvas') : null;
+    let glError = null;
+    if (canvas) {
+      try {
+        const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+        if (gl) glError = gl.getError();
+      } catch (_) { glError = 'unavailable'; }
+    }
+    return {
+      ready: markReady,
+      failed: markFailed,
+      state: stage ? stage.state : null,
+      running: markRaf !== 0,
+      canvases: document.querySelectorAll('canvas').length,
+      instances: stage ? stage.currentInstances || 0 : 0,
+      fps: stage ? Math.round(stage.fps) : 0,
+      audioFrames,
+      audio: stage ? { ...stage.audio } : null,
+      display: {
+        width: canvas ? canvas.width : 0,
+        height: canvas ? canvas.height : 0,
+        cssWidth: canvas ? canvas.clientWidth : 0,
+        cssHeight: canvas ? canvas.clientHeight : 0
+      },
+      glError
+    };
+  }
+};

@@ -10,6 +10,7 @@
  *   node scripts/check-island.js
  */
 import { spawn, execSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -17,6 +18,7 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 const PORT = 9337;
 const EXE = path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
 const ISLAND_W = 380;
+const ARTIFACTS = path.join(ROOT, 'artifacts');
 
 let failures = 0;
 const pass = (n, d) => console.log(`  PASS ${n}${d ? ' -> ' + d : ''}`);
@@ -90,6 +92,29 @@ const near = (a, b, tolerance = 3) => Math.abs(Number(a) - Number(b)) <= toleran
 
 async function islandStatus(mainCdp) {
   return mainCdp.eval('window.legion.island.status()');
+}
+
+/**
+ * Save the live island page as a PNG for inspection.
+ *
+ * An open image viewer can lock the file on Windows, so unused numbered names
+ * are preferred instead of aborting the run or overwriting a capture mid-view.
+ */
+async function capture(cdp, base) {
+  try {
+    const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' });
+    fs.mkdirSync(ARTIFACTS, { recursive: true });
+    for (let i = 1; i <= 9; i++) {
+      const file = path.join(ARTIFACTS, `${base}${i === 1 ? '' : `-${i}`}.png`);
+      try {
+        fs.writeFileSync(file, Buffer.from(data, 'base64'), { flag: 'wx' });
+        return file;
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+      }
+    }
+  } catch (_) { /* a missing artifact must not fail the checks */ }
+  return null;
 }
 
 async function main() {
@@ -170,6 +195,33 @@ async function main() {
     check('island has no overflow', !snap.overflow.x && !snap.overflow.y, JSON.stringify(snap.overflow));
     check('island uses a themed accent', /^#|rgb/.test(snap.accent), snap.accent);
 
+    /* the shared GLY mark, rendered by the same stage as the shell */
+    const mark = await waitFor(
+      () => islandCdp.eval(`(() => {
+        const m = window.legionIsland && window.legionIsland.mark();
+        return m && (m.ready || m.failed) ? m : null;
+      })()`),
+      25000, 'island GLY mark'
+    ).catch(() => null);
+
+    check('island renders the GLY mark', mark && mark.ready === true && mark.failed === false,
+      JSON.stringify(mark));
+    check('island owns exactly one particle canvas', mark && mark.canvases === 1,
+      mark ? `${mark.canvases} canvas(es)` : 'no diagnostics');
+    check('segmented-ring mark stays circular',
+      mark && mark.display.cssWidth === mark.display.cssHeight &&
+      near(mark.display.width, mark.display.height, 1) &&
+      mark.display.cssWidth > 0 && mark.display.cssHeight > 0,
+      mark ? JSON.stringify(mark.display) : 'no diagnostics');
+    check('GLY mark renders without a GL error', mark && mark.glError === 0,
+      mark ? `glError=${mark.glError}` : 'no diagnostics');
+    check('GLY mark uses a surface-sized particle budget',
+      mark && mark.instances >= 600 && mark.instances <= 1600,
+      mark ? `${mark.instances} instances` : 'no diagnostics');
+
+    const compactShot = await capture(islandCdp, 'island-compact');
+    console.log(`  capture ${compactShot || 'unavailable'}`);
+
     const status = await islandStatus(mainCdp);
     const display = (displays.displays || []).find((d) => d.id === status.displayId) || displays.displays[0];
     const area = display.workArea;
@@ -219,6 +271,9 @@ async function main() {
       near(expanded.status.windowBounds.width, ISLAND_W, 1) && near(expanded.status.windowBounds.height, 480, 1),
       JSON.stringify(expanded.status.windowBounds));
 
+    const expandedShot = await capture(islandCdp, 'island-expanded');
+    console.log(`  capture ${expandedShot || 'unavailable'}`);
+
     /* state mirroring through the real main process, in the compact pill */
     await islandCdp.eval(`window.legion.island.expand(false)`);
     await sleep(150);
@@ -227,13 +282,15 @@ async function main() {
       const seen = await waitFor(
         () => islandCdp.eval(`(() => {
           const el = document.getElementById('island');
-          return el.dataset.state === '${state}' ? { state: el.dataset.state, mode: el.dataset.mode } : null;
+          if (el.dataset.state !== '${state}') return null;
+          const m = window.legionIsland.mark();
+          return { state: el.dataset.state, mode: el.dataset.mode, glyState: m.state, running: m.running };
         })()`),
         4000, `island state ${state}`
       ).catch(() => null);
       check(`island mirrors ${state}${state === 'IDLE' ? '' : ` as ${mode}`}`,
-        seen && seen.state === state && seen.mode === mode,
-        seen ? `${seen.state}/${seen.mode}` : 'never arrived');
+        seen && seen.state === state && seen.mode === mode && seen.glyState === state && seen.running === true,
+        seen ? `${seen.state}/${seen.mode} gly=${seen.glyState} running=${seen.running}` : 'never arrived');
     }
 
     const stopped = await islandCdp.eval(`(() => {
@@ -281,6 +338,17 @@ async function main() {
     check('the assistant reply streams back into the island',
       chat.messages.some((m) => m.kind.includes('assistant') && m.text.length > 0),
       JSON.stringify(chat).slice(0, 500));
+
+    /* real measured levels reach the island's mark, not a synthetic timer */
+    const heard = await waitFor(
+      () => islandCdp.eval(`(() => {
+        const m = window.legionIsland.mark();
+        return m.audioFrames > 0 ? m : null;
+      })()`),
+      10000, 'island audio levels'
+    ).catch(() => null);
+    check('island GLY reacts to measured playback levels', !!heard && heard.audioFrames > 0,
+      heard ? `${heard.audioFrames} level frame(s)` : 'none arrived');
 
     /* stop generation while the mock is still streaming */
     const stopProbe = await islandCdp.eval(`(async () => {
@@ -379,9 +447,28 @@ async function main() {
     const hidden = await mainCdp.eval('window.legion.island.hide()');
     check('island can be disabled without closing LEGION', hidden && hidden.enabled === false,
       JSON.stringify(hidden));
+    const paused = await waitFor(
+      () => islandCdp.eval(`(() => {
+        const m = window.legionIsland.mark();
+        return m.running === false ? m : null;
+      })()`),
+      4000, 'island mark paused'
+    ).catch(() => null);
+    check('island stops its render loop while hidden', !!paused,
+      paused ? JSON.stringify(paused) : 'still running');
     const restored = await mainCdp.eval('window.legion.island.show()');
     check('island restores after being hidden', restored && restored.visible === true && restored.enabled === true,
       JSON.stringify(restored));
+    const resumed = await waitFor(
+      () => islandCdp.eval(`(() => {
+        const m = window.legionIsland.mark();
+        return m.running === true ? m : null;
+      })()`),
+      4000, 'island mark resumed'
+    ).catch(() => null);
+    check('island resumes the same mark without rebuilding it',
+      !!resumed && resumed.ready === true && resumed.canvases === 1,
+      resumed ? `ready=${resumed.ready} canvases=${resumed.canvases}` : 'never resumed');
 
     const pages = await targets();
     const islandPages = pages.filter((t) => /\/island\.html$/.test(t.url));
@@ -393,6 +480,7 @@ async function main() {
       return {
         name: info.name,
         hasBody: !!document.getElementById('stage'),
+        stageCanvases: document.querySelectorAll('#stage canvas').length,
         state: state && state.state,
         title: document.title
       };
@@ -400,6 +488,9 @@ async function main() {
     check('the existing main window still works',
       mainHealth && mainHealth.name === 'LEGION' && mainHealth.hasBody && !!mainHealth.state,
       JSON.stringify(mainHealth));
+    check('the island did not add a second canvas to the main shell',
+      mainHealth && mainHealth.stageCanvases === 1,
+      mainHealth ? `${mainHealth.stageCanvases} main stage canvas(es)` : 'no diagnostics');
 
     // Leave the profile as it was found.
     if (priorIsland) {

@@ -30,6 +30,19 @@ const TOOL_CATEGORY_KEY = {
 
 const PANELS = ['conversation', 'tools', 'memory', 'settings'];
 
+/**
+ * One source of truth for the accent each theme publishes. The shell, the
+ * waveform and the island's particle stage all read from here, so a theme can
+ * never drift between surfaces.
+ */
+const THEME_VISUALS = {
+  'legion-dark': { accent: '#35c8ff', glow: 1.0, scan: .5 },
+  abyss:         { accent: '#35c8ff', glow: 1.0, scan: .5 },
+  ember:         { accent: '#ff7a45', glow: 1.1, scan: .42 },
+  mint:          { accent: '#3ee2a4', glow: 0.95, scan: .4 },
+  mono:          { accent: '#c8d2e0', glow: 0.8, scan: .3 }
+};
+
 // Synthesis crosses the process boundary. A provider that hangs must not leave
 // the UI in PROCESSING or hold the microphone suspended forever, so every call
 // is bounded independently of the playback watchdog inside AudioEngine.
@@ -352,7 +365,10 @@ class Legion {
         const levels = this.audio.sample();
         const listening = this.store.state === 'LISTENING' || this.pttActive;
         const talking = this.store.state === 'SPEAKING' || this.audio.ttsPlaying;
-        this.stage.setAudio(talking ? levels.tts : levels.mic, talking ? 'speaking' : listening ? 'listening' : 'idle');
+        const audioMode = talking ? 'speaking' : listening ? 'listening' : 'idle';
+        const audioLevels = talking ? levels.tts : levels.mic;
+        this.stage.setAudio(audioLevels, audioMode);
+        this.#relayAudio(audioLevels, audioMode);
         // setState reseeds per-state animation timers, so it belongs on a real
         // transition. Calling it every frame restarts the boot sequence and
         // pins every easing target to the current instant.
@@ -447,6 +463,52 @@ class Legion {
     try {
       if (api.island && typeof api.island.relay === 'function') api.island.relay(payload);
     } catch (_) { /* the island is optional */ }
+  }
+
+  /**
+   * Mirror the visual policy (theme accent, glow, reduced motion, bloom) so the
+   * island's stage matches the shell without copying config logic. This is sent
+   * on boot and whenever Settings writes a change.
+   */
+  #relayVisual() {
+    const t = THEME_VISUALS[this.theme] || THEME_VISUALS['legion-dark'];
+    const v = this.config?.visual || {};
+    this.#relay({
+      kind: 'visual',
+      accent: t.accent,
+      glow: t.glow,
+      scan: t.scan,
+      themeIntensity: v.themeIntensity ?? 1,
+      reducedMotion: !!v.reducedMotion,
+      bloom: v.bloom !== false
+    });
+  }
+
+  /**
+   * Forward measured microphone or playback levels to the island.
+   *
+   * Sampled at ~11 Hz: the mark eases toward each value, so a higher rate would
+   * only add IPC traffic. Nothing is sent while nothing is being captured or
+   * played, and one explicit zero frame follows the end of a turn so the mark
+   * relaxes instead of freezing on its last level.
+   */
+  #relayAudio(levels, mode) {
+    const active = mode !== 'idle';
+    const now = performance.now();
+    if (active) {
+      if (now - (this._audioRelayAt || 0) < 90) return;
+      this._audioRelayAt = now;
+    } else if (!this._audioRelayActive) {
+      return;
+    }
+    this._audioRelayActive = active;
+    const src = active && levels ? levels : {};
+    const n = (x) => Math.round(Math.max(0, Math.min(1, Number(x) || 0)) * 1000) / 1000;
+    this.#relay({
+      kind: 'audio',
+      mode,
+      low: n(src.low), mid: n(src.mid), high: n(src.high), energy: n(src.energy)
+    });
   }
 
   #paintCaption() {
@@ -1381,6 +1443,9 @@ class Legion {
     this.stage?.setScanlines(c?.visual?.showScanlines !== false);
     this.wave.setVisible(c?.visual?.showWaveform !== false);
     this.audio.setMuted(!!c?.voice?.muted);
+    // Settings can change reduced motion, intensity or bloom without touching
+    // the theme, so the island needs the policy even when the accent is stable.
+    this.#relayVisual();
   }
 
   async refreshMemory() {
@@ -1558,19 +1623,15 @@ class Legion {
 
   applyTheme(theme, initial) {
     this.theme = theme || 'legion-dark';
-    const T = {
-      'legion-dark': { accent: '#35c8ff', glow: 1.0, scan: .5 },
-      abyss:        { accent: '#35c8ff', glow: 1.0, scan: .5 },
-      ember:        { accent: '#ff7a45', glow: 1.1, scan: .42 },
-      mint:         { accent: '#3ee2a4', glow: 0.95, scan: .4 },
-      mono:         { accent: '#c8d2e0', glow: 0.8, scan: .3 }
-    };
-    const t = T[this.theme] || T['legion-dark'];
+    const t = THEME_VISUALS[this.theme] || THEME_VISUALS['legion-dark'];
     document.documentElement.style.setProperty('--accent', t.accent);
     document.documentElement.style.setProperty('--accent-dim', hexToRgba(t.accent, 0.16));
     this.wave?.setAccent(parseRgb(t.accent));
     this.stage?.setAccent(t.accent, t.glow);
     this.stage?.setScanlineAlpha?.(t.scan);
+    // The island runs in its own window, so it cannot observe this DOM. Relay
+    // the resolved colours rather than making it duplicate the theme table.
+    this.#relayVisual();
     if (!initial) this.emit('config', this.config);
   }
 }

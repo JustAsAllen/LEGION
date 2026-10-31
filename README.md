@@ -88,6 +88,13 @@ inside that display's work area and follow monitor/DPI changes. Optional
 auto-collapse returns it to the pill after a configurable idle time unless it is
 pinned. `Ctrl+Alt+Space` opens it with the input focused.
 
+The pill carries a 30 px version of LEGION's GLY particle mark, rendered by the
+same stage, sampler, shaders and theme table as the main shell — not a second
+logo or a second animation engine. It reacts to genuinely measured microphone
+and playback levels while listening or speaking, stays subtle while idle, and
+stops rendering entirely while the window is hidden. Reduced motion, theme
+accent and glow follow the shell immediately.
+
 ### Desktop tools
 
 Beyond files and apps, the tool registry exposes a curated desktop surface:

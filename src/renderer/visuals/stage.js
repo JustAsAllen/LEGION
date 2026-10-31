@@ -57,7 +57,10 @@ function dampColor(cur, target, lambda, dt) {
 export class LogoStage {
   constructor(container, options) {
     this.container = container;
-    this.opts = Object.assign({ quality: 'high', particleScale: 1, reducedMotion: false, themeIntensity: 1, bloom: true }, options || {});
+    this.opts = Object.assign({ quality: 'high', particleScale: 1, reducedMotion: false, themeIntensity: 1, bloom: true, parallax: true }, options || {});
+    // A small fixed surface (the island) must not be nudged around by the
+    // pointer, so parallax is opt-out rather than hard-wired to the shell.
+    this.parallax = this.opts.parallax !== false;
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: false,
@@ -139,7 +142,7 @@ export class LogoStage {
     this._onPointer = this._onPointer.bind(this);
 
     window.addEventListener('resize', this._resize);
-    window.addEventListener('pointermove', this._onPointer, { passive: true });
+    if (this.parallax) window.addEventListener('pointermove', this._onPointer, { passive: true });
     this._resize();
   }
 
@@ -443,7 +446,7 @@ export class LogoStage {
     this.panelShift = damp(this.panelShift, this.panelShiftTarget, 5, dt);
 
     const dist = this.baseDistance || 44;
-    const par = this.reducedMotion ? 0 : 1;
+    const par = this.reducedMotion || !this.parallax ? 0 : 1;
     this.camera.position.x = this.pointerSmooth.x * 1.5 * par + this.panelShift;
     this.camera.position.y = -this.pointerSmooth.y * 1.1 * par;
     this.camera.position.z = dist;

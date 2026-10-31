@@ -168,6 +168,45 @@ owned: if the Island is closed, the main process continues exactly as before.
 A user-invoked cancel is reported as `cancelled`, not as an error, so mirrors
 return to `IDLE` instead of flashing `ERROR` after stopping a turn.
 
+#### GLY mark in the Island
+
+The pill's mark is not a second logo: it is the same `LogoStage`,
+`LogoLoader`, sampler worker, shaders and glyph atlas the shell uses, mounted
+into a 30x30 square slot in the header. The slot stays square so the stage's
+perspective fit keeps the segmented ring circular at every DPI; the thin CSS
+ring underneath is a placeholder until `data-gly="ready"`, and a graceful
+fallback if a WebGL context cannot be created.
+
+A `BrowserWindow` necessarily owns its own WebGL context, so the rule is one
+stage per island window, not one per app. The stage is created once on first
+paint, kept for the window's lifetime, and disposed on `pagehide`. It is never
+rebuilt when the window is hidden or restored: the same canvas and context are
+paused and resumed.
+
+The mark runs its own frame loop instead of `stage.start()`, because the island
+needs a different policy from the shell:
+
+| Condition | Frames |
+| --- | --- |
+| Hidden (`island.hide()` or `document.hidden`) | none |
+| `IDLE` / `OFFLINE` | ~30 fps |
+| Any active state | display rate |
+
+The island uses the `low` quality tier with `particleScale: 0.35`, adaptive
+quality off and pointer parallax off. That yields about 770 instances, inside
+the field's 600-instance floor, which is what keeps the ring dense at 30 px
+without the shell's 10k-instance budget.
+
+State visuals are driven by the real state machine (`setState`), and audio by
+measured levels relayed from the main renderer. The main shell owns the
+microphone and playback analysers; the island never opens a device. While
+listening or speaking it receives a `kind: 'audio'` payload at about 11 Hz, plus
+one explicit zero frame when the turn ends so the mark relaxes. Theme accent,
+glow, intensity, bloom and reduced motion arrive as a `kind: 'visual'` payload
+whenever the shell applies a theme or Settings writes the visual policy. Both
+windows therefore share one theme table (`THEME_VISUALS` in `app.js`) instead
+of duplicating colours.
+
 ## 4. AI turn lifecycle
 
     input
@@ -262,6 +301,9 @@ The renderer check records the live camera and canvas aspects and requires them 
   camera.aspect === canvas.width / canvas.height
 
 This preserves 1:1 screen-space geometry while allowing the canvas itself to remain widescreen. The vertical fit is held constant so the ring remains centered with padding around the shell chrome.
+
+The island's mark box is square, so the same projection rule keeps its ring
+circular; the island check asserts equal CSS and drawing-buffer dimensions.
 
 ## 8. Audio path
 
@@ -362,8 +404,9 @@ Build products are never source-controlled.
 3. **Data/voice** — config, storage, TTS routing, voice-pack provenance, and the
    desktop tool registration/confirmation/enum contract.
 4. **Live renderer** — shell behaviour, WebGL state and square camera projection.
-5. **Island** — the opt-in window boots, mirrors state, and issues actions
-   (`npm run check:island`, 44 checks against a live `--dev` instance).
+5. **Island** — the opt-in window boots, mirrors state, issues actions, and
+   renders its own GLY mark with a paused hidden state
+   (`npm run check:island`, 52 checks against a live `--dev` instance).
 6. **Package** — real unpacked build and installed resource layout.
 7. **Optional live AI** — real Gemini streamed turn with `LEGION_LIVE_AI=1` and `GEMINI_API_KEY`.
 
