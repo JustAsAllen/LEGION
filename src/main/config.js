@@ -105,7 +105,11 @@ const DEFAULTS = Object.freeze({
     panelPosition: 'right',      // right | left
     theme: 'legion-dark',
     island: {
-      enabled: false             // the Dynamic Island is opt-in and additive
+      enabled: false,            // the Dynamic Island is opt-in and additive
+      position: 'top-center',    // top-center | top-left | top-right | bottom-center | bottom-left | bottom-right
+      display: 'primary',        // primary | cursor | display index as a string
+      autoCollapse: false,       // collapse the expanded island after a pause
+      autoCollapseMs: 9000
     }
   },
 

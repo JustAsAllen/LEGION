@@ -22,7 +22,7 @@ The automated check suite is the source of truth for repeatable verification.
 - [x] Tool catalogue, confirmation gate and sandbox policy
 - [x] Desktop agent tools: window list/focus/close, clipboard, screenshot, media keys, notification, session lock
 - [x] Bounded provider retry (pre-delta, honours retry-after) and native tool transcripts per adapter
-- [x] Opt-in Dynamic Island as a separate always-on-top window, with its own checks
+- [x] Opt-in Dynamic Island as a separate always-on-top window, with six positions, display targeting, DPI/work-area clamping and its own checks
 - [x] Memory, config, metrics and secret handling
 - [x] Procedural three-arc ring and off-main-thread sampler
 - [x] Square WebGL mark projection for widescreen layouts

@@ -121,29 +121,52 @@ local model and endpoint are cleared.
 ### Dynamic Island window
 
 The Island is an optional second window, off by default (`ui.island.enabled`),
-and never a replacement shell. `src/main/island.js` owns its bounds and nothing
-else: it holds no application state, runs no tools, and mirrors what main
-already broadcasts. With the setting off, the original window and renderer are
-unchanged.
+and never a replacement shell. `src/main/island.js` owns its bounds and its
+visibility only: it holds no application state, runs no tools, and mirrors what
+main already broadcasts. With the setting off, the original window and renderer
+are unchanged.
 
     main
-      ├─ island:state ───────────► island renderer (status, expanded, pinned)
-      ├─ metrics / state / ai:event ─► both windows (send() fan-out)
+      ├─ state / metrics / ai:event ─► both windows (send() fan-out)
+      ├─ island:state ───────────────► island renderer (status, bounds, display)
+      ├─ island:relay ───────────────► island renderer (state, caption, user turn)
       │
-      ◄─ island:show / hide / toggle / expand / pin / command
-      ◄─ island://action ────────► main window (listen, stop, cancel, show)
+      ◄─ island:status / displays / show / hide / toggle / expand / pin
+      ◄─ island:focusInput / command
+      ◄─ island:action ──────────────► main renderer (listen, stop, cancel, chat,
+      │                                 settings, show, resync)
+      ◄─ island:push ────────────────► relay from the main renderer (guarded)
 
-It is a frameless, transparent, always-on-top window anchored 24px from the
-bottom-right of the primary work area, 360px wide, with collapsed (60px) and
-expanded (232px) heights. `skipTaskbar` and `showInactive()` keep it out of the
-taskbar and out of the user's focus. It is toggled from the tray, by
-`Ctrl+Alt+I`, or from Settings.
+The window is frameless, transparent, and always-on-top. It defaults to the top
+centre of the primary display (`top-center`), 380x64 collapsed and 380x480
+expanded. Six positions are supported (`top|bottom` x `left|center|right`),
+the target display is `primary`, `cursor`, or a display index, and bounds are
+clamped to that display's work area. Display added/removed/metrics changes
+re-run positioning, so mixed-DPI and multi-monitor layouts stay inside the
+visible desktop. `skipTaskbar` and `showInactive()` keep it out of the taskbar
+and out of the user's focus.
+
+On Windows/Electron 33 `setAlwaysOnTop(true)` is silently ignored for a window
+created hidden; the controller re-applies `setAlwaysOnTop(true, 'screen-saver')`
+after the window is shown. At 125% scaling Windows reports rounded bounds, so
+tests compare window sizes with a one-pixel tolerance.
+
+Optional auto-collapse (`autoCollapse`, `autoCollapseMs`, minimum 1500 ms)
+returns the panel to the pill after inactivity unless it is pinned; losing focus
+collapses it unless pinned. It is toggled from the tray, by `Ctrl+Alt+I`, or
+from Settings, and `Ctrl+Alt+Space` opens it with the text input focused.
 
 The same preload is used, so the bridge surface does not grow a second
 implementation. `handle()` accepts either the main window or the Island as a
 sender and rejects everything else; `send()` fans main events out to both
-windows. The state it displays is broadcast, not owned: if the Island is closed,
-the main process continues exactly as before.
+windows. A newly created island replays main's current state on
+`did-finish-load` and asks the main renderer to re-send its live caption, because
+broadcasts that fire while the window is loading would otherwise be lost. The
+renderer also reports its settled `IDLE` boot state to main so the authoritative
+state cannot stay stuck on `BOOTING`. The state it displays is broadcast, not
+owned: if the Island is closed, the main process continues exactly as before.
+A user-invoked cancel is reported as `cancelled`, not as an error, so mirrors
+return to `IDLE` instead of flashing `ERROR` after stopping a turn.
 
 ## 4. AI turn lifecycle
 
@@ -340,7 +363,7 @@ Build products are never source-controlled.
    desktop tool registration/confirmation/enum contract.
 4. **Live renderer** — shell behaviour, WebGL state and square camera projection.
 5. **Island** — the opt-in window boots, mirrors state, and issues actions
-   (`npm run check:island`, 16 checks against a live `--dev` instance).
+   (`npm run check:island`, 44 checks against a live `--dev` instance).
 6. **Package** — real unpacked build and installed resource layout.
 7. **Optional live AI** — real Gemini streamed turn with `LEGION_LIVE_AI=1` and `GEMINI_API_KEY`.
 

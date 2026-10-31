@@ -229,6 +229,11 @@ class Legion {
         this.#idleHint();
       }
 
+      // Main broadcasts state and is the authority the island mirrors. Its
+      // boot path only knows it entered BOOTING, so the renderer reports when
+      // the shell actually settles instead of leaving main stuck on BOOTING.
+      if (this.store.state === 'IDLE') api.app.setState('IDLE').catch(() => {});
+
       this.shortcuts = new Shortcuts(this);
       this.#loop();
     } catch (err) {
@@ -310,6 +315,7 @@ class Legion {
     this.store.setState('BOOTING', 'Bringing the mark online');
     this.stage?.runBootSequence();
     this.store.setState('IDLE');
+    api.app.setState('IDLE').catch(() => {});
 
     // Tell the main process the wizard closed, so its onboarded flag, tray menu
     // and window state agree with the renderer.
@@ -425,11 +431,28 @@ class Legion {
       this.store.setStreaming('');
     }
     this.emit('state', { prev, next, note });
+    this.#relay({ kind: 'state', state: next, detail: note || '' });
+  }
+
+  /**
+   * Push the live turn to the Dynamic Island.
+   *
+   * The shell owns the conversation, so the island must never run its own AI
+   * turn just to show one. This is a one-way, fire-and-forget mirror: caption
+   * changes, streamed text, the current state, and the user's message. Main
+   * forwards it only to the island window, so the shell never receives its own
+   * relay back.
+   */
+  #relay(payload) {
+    try {
+      if (api.island && typeof api.island.relay === 'function') api.island.relay(payload);
+    } catch (_) { /* the island is optional */ }
   }
 
   #paintCaption() {
     const el = document.getElementById('live-caption');
     const { caption, captionInterim, streaming } = this.store;
+    this.#relay({ kind: 'caption', caption, interim: captionInterim, streaming });
     if (streaming) { el.textContent = streaming; el.className = 'live-caption'; return; }
     el.textContent = caption || '';
     el.className = captionInterim ? 'live-caption interim' : 'live-caption';
@@ -470,7 +493,15 @@ class Legion {
       const action = p && p.action;
       if (action === 'listen') this.pushToTalkStart();
       else if (action === 'stop') { this.pushToTalkEnd(); this.#releaseMic(); }
+      else if (action === 'chat') this.sendText(p.text);
       else if (action === 'cancel') this.closeTopmost();
+      else if (action === 'resync') {
+        // A newly created island window may have missed broadcasts that fired
+        // while it was loading. Replay the renderer-owned state and caption
+        // instead of giving the island a second copy of the turn logic.
+        this.#relay({ kind: 'state', state: this.store.state, detail: this.store.detail || '' });
+        this.#paintCaption();
+      }
     });
 
     this._statusTimer = setInterval(() => this.#paintStatus(), 3000);
@@ -755,6 +786,7 @@ class Legion {
     this._responseSpeech = { chain: Promise.resolve(), count: 0, speechError: null };
     this.store.setStreaming('');
     this.store.setState('PROCESSING');
+    this.#relay({ kind: 'user', text: clean });
     this.#runTextTurn(clean, turn);
     return true;
   }
@@ -1173,6 +1205,11 @@ class Legion {
    */
   async voicePack() {
     try { return await api.voice.pack(); } catch (_) { return null; }
+  }
+
+  /** Display list for the island position control. */
+  async islandDisplays() {
+    try { return await api.island.displays(); } catch (_) { return null; }
   }
 
   /**

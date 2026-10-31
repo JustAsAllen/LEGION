@@ -53,11 +53,21 @@ const islandCtl = createIslandController({
   config,
   preloadPath: PRELOAD_PATH,
   isDev,
-  onCommand: (cmd) => {
+  getState: () => ({ state: currentState, detail: lastError, at: Date.now() }),
+  onReady: () => sendToMain('island:action', { action: 'resync' }),
+  onCommand: (cmd, payload) => {
     if (cmd === 'show') return showWindow();
+    if (cmd === 'settings') return showWindow('settings');
+    if (cmd === 'quit') { quitting = true; app.quit(); return undefined; }
+    if (cmd === 'chat') {
+      const text = payload && payload.text ? String(payload.text) : '';
+      if (text) sendToMain('island:action', { action: 'chat', text });
+      return undefined;
+    }
     if (cmd === 'listen' || cmd === 'stop' || cmd === 'cancel') {
       sendToMain('island:action', { action: cmd });
     }
+    return undefined;
   }
 });
 
@@ -426,6 +436,7 @@ function registerIpc() {
     toolManager.syncSandbox();
     applyStartupSetting();
     syncWakeListener();
+    islandCtl.applyConfig();
     return { settings: config.get(), sandboxRoots: toolManager.sandbox.describe() };
   });
 
@@ -433,6 +444,7 @@ function registerIpc() {
     config.reset();
     toolManager.syncSandbox();
     syncWakeListener();
+    islandCtl.applyConfig();
     return { settings: config.get() };
   });
 
@@ -476,8 +488,18 @@ function registerIpc() {
       const res = await ai.respond(input);
       return { ok: true, ...res };
     } catch (err) {
-      setError(err);
-      return { ok: false, error: { message: err.message, code: err.code || 'E_AI' } };
+      // A user-initiated stop is not a failure. Reporting it as one would
+      // overwrite the IDLE the renderer already moved to and leave every
+      // mirror (the island included) showing an error for a normal cancel.
+      const cancelled = !!err && (
+        err.name === 'AbortError' || err.code === 'E_ABORTED' || err.code === 'ABORT_ERR'
+      );
+      if (!cancelled) setError(err);
+      return {
+        ok: false,
+        cancelled,
+        error: { message: err.message, code: err.code || (cancelled ? 'E_ABORTED' : 'E_AI') }
+      };
     } finally {
       // A typed turn that produced no audio leaves main in PROCESSING. Only
       // settle it here if speech did not take authority in the meantime.
@@ -817,12 +839,25 @@ function registerIpc() {
   });
 
   handle('island:status', async () => islandCtl.status());
+  handle('island:displays', async () => islandCtl.displays());
   handle('island:show', async () => islandCtl.show());
   handle('island:hide', async () => islandCtl.hide());
   handle('island:toggle', async () => islandCtl.toggle());
   handle('island:expand', async (v) => islandCtl.setExpanded(v));
   handle('island:pin', async (v) => islandCtl.setPinned(v));
-  handle('island:command', async (name) => islandCtl.command(name));
+  handle('island:focusInput', async () => islandCtl.focusInput());
+  handle('island:command', async (name, payload) => islandCtl.command(name, payload));
+
+  /* The main renderer owns the conversation turn, so it pushes the live caption
+     and streaming text here. Fire-and-forget: a token delta is far too frequent
+     to allocate a promise for, and the island may not even be open. */
+  ipcMain.on('island:push', (event, payload) => {
+    if (!win || event.sender !== win.webContents) return;
+    if (!payload || typeof payload !== 'object') return;
+    const iw = islandCtl.window();
+    if (!iw || iw.isDestroyed() || !iw.webContents || iw.webContents.isDestroyed()) return;
+    iw.webContents.send('island:relay', payload);
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -859,6 +894,7 @@ function registerGlobalShortcuts() {
   tryReg('CommandOrControl+L', () => showWindow());
   tryReg('CommandOrControl+Shift+L', () => { showWindow(); send('shortcut:activate', {}); });
   tryReg('CommandOrControl+Alt+I', () => islandCtl.toggle());
+  tryReg('CommandOrControl+Alt+Space', () => islandCtl.focusInput());
   // A silent registration failure leaves the user with a dead shortcut and no
   // explanation. The renderer may not have finished loading yet, so this rides
   // along on the app:ready payload instead of being pushed as a bare event.

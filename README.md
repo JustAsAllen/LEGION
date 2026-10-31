@@ -81,6 +81,13 @@ default (`ui.island.enabled`), opens from the tray, `Ctrl+Alt+I`, or Settings,
 and runs the same allowlisted preload. It owns no state and never replaces the
 main shell; with it disabled the original window is unchanged.
 
+The pill defaults to the top centre of the primary display (380x64, expanding
+to 380x480). Settings can move it to any of six positions on the primary
+display, the display under the cursor, or a specific display index; bounds stay
+inside that display's work area and follow monitor/DPI changes. Optional
+auto-collapse returns it to the pill after a configurable idle time unless it is
+pinned. `Ctrl+Alt+Space` opens it with the input focused.
+
 ### Desktop tools
 
 Beyond files and apps, the tool registry exposes a curated desktop surface:

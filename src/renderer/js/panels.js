@@ -503,6 +503,46 @@ export function settingsPanel(host, app) {
     </div>
 
     <div class="sec">
+      <h3 class="sec-title">Dynamic Island</h3>
+      <p class="tool-desc" style="padding-left:0">A small floating assistant that shares this window's AI, voice and conversation. It is additive: turning it on never replaces the full interface.</p>
+      <label class="toggle">
+        <input type="checkbox" id="set-island" />
+        <span class="sw"></span>
+        <span class="t-body">
+          <span class="t-label">Show the Dynamic Island</span>
+          <span class="t-hint">Always on top, frameless, and out of the taskbar. Ctrl+Alt+I toggles it; Ctrl+Alt+Space opens it with the text box focused.</span>
+        </span>
+      </label>
+      <div class="field" style="margin-top:10px">
+        <span>Position</span>
+        <div class="chips" id="set-island-pos">
+          <button class="chip" data-island-pos="top-center">Top centre</button>
+          <button class="chip" data-island-pos="top-left">Top left</button>
+          <button class="chip" data-island-pos="top-right">Top right</button>
+          <button class="chip" data-island-pos="bottom-center">Bottom centre</button>
+          <button class="chip" data-island-pos="bottom-left">Bottom left</button>
+          <button class="chip" data-island-pos="bottom-right">Bottom right</button>
+        </div>
+      </div>
+      <label class="field">
+        <span>Display</span>
+        <select id="set-island-display">
+          <option value="primary">Primary display</option>
+          <option value="cursor">Display with the cursor</option>
+        </select>
+        <span class="hint">Positions are work-area aware and follow Windows DPI scaling.</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="set-island-autocollapse" />
+        <span class="sw"></span>
+        <span class="t-body">
+          <span class="t-label">Collapse after a pause</span>
+          <span class="t-hint">Returns the expanded island to its compact pill after a few seconds without activity. A pinned island never collapses.</span>
+        </span>
+      </label>
+    </div>
+
+    <div class="sec">
       <h3 class="sec-title">Privacy and data</h3>
       <label class="toggle">
         <input type="checkbox" id="set-store-history" />
@@ -705,6 +745,34 @@ export function settingsPanel(host, app) {
     const theme = c.ui?.theme === 'legion-dark' ? 'abyss' : (c.ui?.theme || 'abyss');
     for (const b of host.querySelectorAll('#set-themes .chip')) b.classList.toggle('is-on', b.dataset.theme === theme);
     for (const b of host.querySelectorAll('#set-panelpos .chip')) b.classList.toggle('is-on', b.dataset.pos === (c.ui?.panelPosition || 'right'));
+
+    // Dynamic Island. Its own settings live under ui.island so nothing about
+    // the shell's appearance changes when the island is enabled.
+    const island = c.ui?.island || {};
+    $('#set-island').checked = !!island.enabled;
+    $('#set-island-autocollapse').checked = !!island.autoCollapse;
+    for (const b of host.querySelectorAll('#set-island-pos .chip')) {
+      b.classList.toggle('is-on', b.dataset.islandPos === (island.position || 'top-center'));
+    }
+    {
+      const displaySel = $('#set-island-display');
+      const wanted = island.display === undefined ? 'primary' : String(island.display);
+      if ([...displaySel.options].some((o) => o.value === wanted)) displaySel.value = wanted;
+      if (!displaySel.dataset.loaded) {
+        displaySel.dataset.loaded = '1';
+        Promise.resolve(app.islandDisplays ? app.islandDisplays() : null)
+          .then((r) => {
+            for (const d of (r && r.displays) || []) {
+              const o = document.createElement('option');
+              o.value = String(d.index);
+              o.textContent = `${d.label}${d.primary ? ' (primary)' : ''} — ${d.bounds.width}×${d.bounds.height} @ ${Math.round((d.scaleFactor || 1) * 100)}%`;
+              displaySel.appendChild(o);
+            }
+            if ([...displaySel.options].some((o) => o.value === wanted)) displaySel.value = wanted;
+          })
+          .catch(() => { /* keep the two portable choices */ });
+      }
+    }
 
     $('#set-store-history').checked = c.privacy?.storeConversations !== false;
     $('#set-allow-web').checked = c.tools?.allowWeb !== false;
@@ -1015,6 +1083,21 @@ export function settingsPanel(host, app) {
     if (!r.ok) return app.toast('error', 'Could not save', r.error);
     for (const x of host.querySelectorAll('#set-panelpos .chip')) x.classList.toggle('is-on', x === b);
     app.setPanelPosition(b.dataset.pos);
+  });
+
+  host.querySelector('#set-island-pos').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-island-pos]');
+    if (!b) return;
+    const r = await save({ ui: { island: { position: b.dataset.islandPos } } });
+    if (!r.ok) return app.toast('error', 'Could not move the island', r.error);
+    for (const x of host.querySelectorAll('#set-island-pos .chip')) x.classList.toggle('is-on', x === b);
+  });
+
+  $('#set-island').addEventListener('change', (e) => save({ ui: { island: { enabled: e.target.checked } } }));
+  $('#set-island-autocollapse').addEventListener('change', (e) => save({ ui: { island: { autoCollapse: e.target.checked } } }));
+  $('#set-island-display').addEventListener('change', (e) => {
+    const value = e.target.value;
+    save({ ui: { island: { display: /^\d+$/.test(value) ? Number(value) : value } } });
   });
 
   $('#set-store-history').addEventListener('change', (e) => save({ privacy: { storeConversations: e.target.checked } }));

@@ -2,9 +2,10 @@
  * Dynamic Island smoke check.
  *
  * Launches LEGION in development mode, enables the island through the real
- * bridge, then connects a second CDP session to the island page and verifies
- * that it mirrors state, expands, pins, and collapses without touching the
- * main shell.
+ * bridge, then connects a second CDP session to the island page. It verifies
+ * compact and expanded layouts, state mirroring, text input through the shared
+ * conversation, stop controls, settings access, configurable positioning,
+ * auto-collapse, hide/restore, and that the main shell is untouched.
  *
  *   node scripts/check-island.js
  */
@@ -15,6 +16,7 @@ import process from 'node:process';
 const ROOT = path.resolve(import.meta.dirname, '..');
 const PORT = 9337;
 const EXE = path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
+const ISLAND_W = 380;
 
 let failures = 0;
 const pass = (n, d) => console.log(`  PASS ${n}${d ? ' -> ' + d : ''}`);
@@ -84,6 +86,12 @@ async function connect(match) {
   return cdp;
 }
 
+const near = (a, b, tolerance = 3) => Math.abs(Number(a) - Number(b)) <= tolerance;
+
+async function islandStatus(mainCdp) {
+  return mainCdp.eval('window.legion.island.status()');
+}
+
 async function main() {
   console.log('dynamic island smoke check\n');
 
@@ -93,15 +101,43 @@ async function main() {
 
   let mainCdp;
   let islandCdp;
+  let priorAi = null;
+  let priorVoice = null;
+  let priorIsland = null;
   try {
     mainCdp = await connect((t) => /\/index\.html$/.test(t.url));
     await waitFor(() => mainCdp.eval(`!!(window.legion && window.legion.island)`), 60000, 'bridge');
+    // The shell reports its settled boot state to main; enabling the island
+    // before that would only prove it mirrors the startup BOOTING state.
+    await waitFor(
+      () => mainCdp.eval(`window.legion.app.state().then((r) => r.state === 'IDLE')`),
+      45000, 'main shell idle'
+    );
 
-    const before = await mainCdp.eval(`window.legion.island.status()`);
-    check('island starts disabled', before && before.enabled === false && before.visible === false,
+    priorAi = (await mainCdp.eval('window.legion.config.get()')).settings.ai;
+    priorVoice = (await mainCdp.eval('window.legion.config.get()')).settings.voice;
+    priorIsland = (await mainCdp.eval('window.legion.config.get()')).settings.ui.island;
+
+    // The dev profile persists settings between runs, so start from the
+    // documented defaults instead of assuming a fresh profile.
+    await mainCdp.eval(`window.legion.config.set({ ui: { island: { enabled: false, position: 'top-center', display: 'primary', autoCollapse: false, autoCollapseMs: 9000 } } })`);
+
+    const before = await islandStatus(mainCdp);
+    check('island is disabled until the user enables it', before && before.enabled === false && before.visible === false,
       JSON.stringify(before));
+    check('island defaults to the top centre of the primary display',
+      before && before.position === 'top-center' && before.display === 'primary',
+      `position=${before && before.position} display=${before && before.display}`);
 
-    const shown = await mainCdp.eval(`window.legion.island.show()`);
+    const displays = await mainCdp.eval('window.legion.island.displays()');
+    check('display list is available for multi-monitor placement',
+      displays && Array.isArray(displays.displays) && displays.displays.length >= 1,
+      `${displays && displays.displays ? displays.displays.length : 0} display(s)`);
+    check('each display reports work area and DPI scale',
+      displays && displays.displays.every((d) => d.workArea && d.scaleFactor >= 1),
+      displays && displays.displays.map((d) => `${d.label}@${d.scaleFactor}x`).join(', '));
+
+    const shown = await mainCdp.eval('window.legion.island.show()');
     check('island can be enabled from the bridge', shown && shown.enabled === true, JSON.stringify(shown));
 
     islandCdp = await connect((t) => /\/island\.html$/.test(t.url));
@@ -113,6 +149,7 @@ async function main() {
       const r = el.getBoundingClientRect();
       return {
         state: el.dataset.state,
+        mode: el.dataset.mode,
         expanded: el.dataset.expanded,
         brand: document.querySelector('.island-brand').textContent,
         label: document.getElementById('island-state').textContent,
@@ -126,36 +163,88 @@ async function main() {
 
     check('island renders the LEGION mark', snap.brand === 'LEGION', snap.brand);
     check('island starts collapsed', snap.expanded === 'false' && snap.bodyDisplay === 'none',
-      `expanded=${snap.expanded} body=${snap.bodyDisplay}`);
+      `expanded=${snap.expanded} body=${snap.bodyDisplay} mode=${snap.mode}`);
+    check('compact state is the pill', snap.mode === 'COMPACT', snap.mode);
     check('island mirrors the current state', snap.state === 'IDLE' && snap.label === 'IDLE',
       `${snap.state}/${snap.label}`);
     check('island has no overflow', !snap.overflow.x && !snap.overflow.y, JSON.stringify(snap.overflow));
     check('island uses a themed accent', /^#|rgb/.test(snap.accent), snap.accent);
-    check('island fits its collapsed window', snap.box.h <= 60 && snap.box.w <= 360, JSON.stringify(snap.box));
+
+    const status = await islandStatus(mainCdp);
+    const display = (displays.displays || []).find((d) => d.id === status.displayId) || displays.displays[0];
+    const area = display.workArea;
+    const b = status.windowBounds;
+    check('collapsed window is frameless-sized and rounded',
+      b && near(b.width, ISLAND_W, 1) && near(b.height, 64, 1), JSON.stringify(b));
+    check('island sits near the top centre of the chosen display',
+      b && near(b.x, area.x + Math.round((area.width - ISLAND_W) / 2)) && near(b.y, area.y + 14),
+      `window=${JSON.stringify(b)} area=${JSON.stringify(area)}`);
+    check('island stays within the work area', b &&
+      b.x >= area.x && b.y >= area.y && b.x + b.width <= area.x + area.width && b.y + b.height <= area.y + area.height,
+      JSON.stringify({ b, area }));
+    check('island is always on top', status.alwaysOnTop === true, String(status.alwaysOnTop));
 
     const expanded = await islandCdp.eval(`(async () => {
       await window.legion.island.expand(true);
+      await new Promise((r) => setTimeout(r, 120));
       const el = document.getElementById('island');
+      const thread = document.getElementById('island-thread');
       return {
         expanded: el.dataset.expanded,
+        mode: el.dataset.mode,
         body: getComputedStyle(document.querySelector('.island-body')).display,
+        input: !!document.getElementById('island-input'),
+        send: !!document.getElementById('island-send'),
+        mic: !!document.getElementById('island-mic'),
+        settings: !!document.getElementById('island-settings'),
+        collapse: !!document.getElementById('island-chevron'),
+        close: !!document.getElementById('island-close'),
+        threadScrolls: getComputedStyle(thread).overflowY,
+        overflow: document.documentElement.scrollWidth > innerWidth || document.documentElement.scrollHeight > innerHeight,
         status: await window.legion.island.status()
       };
     })()`);
     check('island expands from the bridge', expanded.expanded === 'true' && expanded.body === 'flex',
       `expanded=${expanded.expanded} body=${expanded.body}`);
+    check('expanded mode exposes the compact conversation surface',
+      expanded.mode === 'EXPANDED' && expanded.input && expanded.send && expanded.mic && expanded.settings,
+      `mode=${expanded.mode} input=${expanded.input} send=${expanded.send}`);
+    check('expanded mode has collapse and manual exit controls',
+      expanded.collapse && expanded.close, `collapse=${expanded.collapse} close=${expanded.close}`);
+    check('conversation thread scrolls instead of overflowing the window',
+      expanded.threadScrolls === 'auto' && !expanded.overflow, `${expanded.threadScrolls} overflow=${expanded.overflow}`);
     check('island status agrees it is expanded', expanded.status && expanded.status.expanded === true,
       JSON.stringify(expanded.status));
+    check('expanded window grows downward without changing width',
+      near(expanded.status.windowBounds.width, ISLAND_W, 1) && near(expanded.status.windowBounds.height, 480, 1),
+      JSON.stringify(expanded.status.windowBounds));
 
-    /* state mirroring through the real main process */
-    for (const state of ['LISTENING', 'PROCESSING', 'SPEAKING', 'IDLE']) {
+    /* state mirroring through the real main process, in the compact pill */
+    await islandCdp.eval(`window.legion.island.expand(false)`);
+    await sleep(150);
+    for (const [state, mode] of [['LISTENING', 'LISTENING'], ['PROCESSING', 'THINKING'], ['SPEAKING', 'RESPONDING'], ['IDLE', 'COMPACT']]) {
       await mainCdp.eval(`window.legion.app.setState('${state}')`);
       const seen = await waitFor(
-        () => islandCdp.eval(`document.getElementById('island').dataset.state === '${state}' ? '${state}' : null`),
-        3000, `island state ${state}`
+        () => islandCdp.eval(`(() => {
+          const el = document.getElementById('island');
+          return el.dataset.state === '${state}' ? { state: el.dataset.state, mode: el.dataset.mode } : null;
+        })()`),
+        4000, `island state ${state}`
       ).catch(() => null);
-      check(`island mirrors ${state}`, seen === state, String(seen));
+      check(`island mirrors ${state}${state === 'IDLE' ? '' : ` as ${mode}`}`,
+        seen && seen.state === state && seen.mode === mode,
+        seen ? `${seen.state}/${seen.mode}` : 'never arrived');
     }
+
+    const stopped = await islandCdp.eval(`(() => {
+      const button = document.getElementById('island-stop');
+      return { visible: !button.hidden, state: document.getElementById('island').dataset.state };
+    })()`);
+    check('stop control is hidden while idle', stopped.visible === false,
+      `state=${stopped.state} visible=${stopped.visible}`);
+
+    await mainCdp.eval(`window.legion.island.expand(true)`);
+    await sleep(120);
 
     const pinned = await islandCdp.eval(`(async () => {
       document.getElementById('island-pin').click();
@@ -163,23 +252,165 @@ async function main() {
       return window.legion.island.status();
     })()`);
     check('island can be pinned', pinned && pinned.pinned === true, JSON.stringify(pinned));
+    await mainCdp.eval(`window.legion.island.pin(false)`);
+
+    /* text turn through the shared conversation */
+    await mainCdp.eval(`window.legion.config.set({ ai: { provider: 'mock', model: '', baseUrl: '' }, voice: { mockTts: true } })`);
+    const chat = await islandCdp.eval(`(async () => {
+      const input = document.getElementById('island-input');
+      input.value = 'Island check message';
+      document.getElementById('island-compose').requestSubmit();
+      await new Promise((r) => setTimeout(r, 2500));
+      const el = document.getElementById('island');
+      return {
+        value: input.value,
+        state: el.dataset.state,
+        caption: document.getElementById('island-caption').textContent,
+        messages: [...document.querySelectorAll('.island-msg')].map((m) => ({
+          kind: [...m.classList].filter((c) => c.startsWith('is-')).join(','),
+          streaming: m.classList.contains('is-streaming'),
+          text: m.textContent.trim()
+        }))
+      };
+    })()`);
+    check('typed text leaves the island input after sending', chat.value === '',
+      `value=${JSON.stringify(chat.value)}`);
+    check('the user message appears in the shared conversation',
+      chat.messages.some((m) => m.kind.includes('user') && m.text.includes('Island check message')),
+      chat.messages.map((m) => `${m.kind}:${m.text.slice(0, 60)}`).join(' | '));
+    check('the assistant reply streams back into the island',
+      chat.messages.some((m) => m.kind.includes('assistant') && m.text.length > 0),
+      JSON.stringify(chat).slice(0, 500));
+
+    /* stop generation while the mock is still streaming */
+    const stopProbe = await islandCdp.eval(`(async () => {
+      const waitFor = async (test, ms) => {
+        const end = Date.now() + ms;
+        while (Date.now() < end) { if (test()) return true; await new Promise((r) => setTimeout(r, 40)); }
+        return false;
+      };
+      // Let the previous reply finish speaking so the next turn can start.
+      await waitFor(() => document.getElementById('island').dataset.state === 'IDLE', 20000);
+      const input = document.getElementById('island-input');
+      input.value = 'Stop this reply';
+      document.getElementById('island-compose').requestSubmit();
+      const visible = await waitFor(() => !document.getElementById('island-stop').hidden, 5000);
+      const before = document.getElementById('island').dataset.state;
+      if (visible) document.getElementById('island-stop').click();
+      const idle = await waitFor(() => document.getElementById('island').dataset.state === 'IDLE', 8000);
+      return { visible, before, state: document.getElementById('island').dataset.state, idle };
+    })()`);
+    check('stop generation is reachable while responding',
+      stopProbe.visible === true && ['PROCESSING', 'SPEAKING'].includes(stopProbe.before),
+      `visible=${stopProbe.visible} state=${stopProbe.before}`);
+    check('stopping a turn returns the island to idle', stopProbe.idle === true, stopProbe.state);
+
+    await mainCdp.eval(`window.legion.config.set({ ai: ${JSON.stringify(priorAi)}, voice: ${JSON.stringify(priorVoice)} })`);
+
+    /* settings access opens the real panel, not a second one */
+    await islandCdp.eval(`document.getElementById('island-settings').click()`);
+    const settingsOpen = await waitFor(
+      () => mainCdp.eval(`(() => {
+        const panel = document.getElementById('panel');
+        const title = document.getElementById('panel-title');
+        return !panel.hidden && title.textContent.trim().toLowerCase() === 'settings'
+          ? { open: true, title: title.textContent.trim() } : null;
+      })()`),
+      6000, 'settings panel'
+    ).catch(() => null);
+    check('island opens the existing Settings panel', !!settingsOpen && settingsOpen.open === true,
+      JSON.stringify(settingsOpen));
+    await mainCdp.eval(`document.getElementById('panel-close').click()`);
+
+    /* optional auto-collapse */
+    await mainCdp.eval(`window.legion.config.set({ ui: { island: { autoCollapse: true, autoCollapseMs: 1500 } } })`);
+    await islandCdp.eval(`window.legion.island.expand(true)`);
+    const autoCollapsed = await waitFor(
+      async () => { const s = await islandStatus(mainCdp); return s.expanded === false ? 'collapsed' : null; },
+      6000, 'auto-collapse'
+    ).catch(() => null);
+    check('optional auto-collapse returns the island to the pill', autoCollapsed === 'collapsed', String(autoCollapsed));
+    await mainCdp.eval(`window.legion.config.set({ ui: { island: { autoCollapse: false } } })`);
+
+    /* configurable position, still inside the work area */
+    const positions = [
+      ['top-left', (a) => a.x + 16, (a) => a.y + 14],
+      ['bottom-right', (a) => a.x + a.width - ISLAND_W - 16, (a) => a.y + a.height - 64 - 16]
+    ];
+    for (const [position, expectedX, expectedY] of positions) {
+      await mainCdp.eval(`window.legion.config.set({ ui: { island: { position: '${position}' } } })`);
+      await sleep(250);
+      const s = await islandStatus(mainCdp);
+      check(`island honours the ${position} position`,
+        s.windowBounds && near(s.windowBounds.x, expectedX(s.workArea)) && near(s.windowBounds.y, expectedY(s.workArea)),
+        `${JSON.stringify(s.windowBounds)} in ${JSON.stringify(s.workArea)}`);
+    }
+
+    /* a second monitor, when this machine has one */
+    if ((displays.displays || []).length > 1) {
+      const secondary = displays.displays.find((d) => !d.primary);
+      await mainCdp.eval(`window.legion.config.set({ ui: { island: { display: ${secondary.index} } } })`);
+      await sleep(250);
+      const s = await islandStatus(mainCdp);
+      check('island can be moved to another display',
+        s.displayId === secondary.id && s.windowBounds &&
+        s.windowBounds.x >= secondary.workArea.x &&
+        s.windowBounds.y >= secondary.workArea.y,
+        `display=${s.displayId} window=${JSON.stringify(s.windowBounds)}`);
+    } else {
+      console.log('  SKIP multi-display placement (only one display attached)');
+    }
+
+    await mainCdp.eval(`window.legion.config.set({ ui: { island: { position: 'top-center', display: 'primary' } } })`);
 
     const collapsed = await islandCdp.eval(`(async () => {
       await window.legion.island.expand(false);
+      await new Promise((r) => setTimeout(r, 120));
       return {
         expanded: document.getElementById('island').dataset.expanded,
+        mode: document.getElementById('island').dataset.mode,
         status: await window.legion.island.status()
       };
     })()`);
     check('island collapses again', collapsed.expanded === 'false' && collapsed.status.expanded === false,
-      `expanded=${collapsed.expanded}`);
+      `expanded=${collapsed.expanded} mode=${collapsed.mode}`);
 
-    const hidden = await mainCdp.eval(`window.legion.island.hide()`);
+    /* hide, then restore from the same controller without a second window */
+    const hidden = await mainCdp.eval('window.legion.island.hide()');
     check('island can be disabled without closing LEGION', hidden && hidden.enabled === false,
       JSON.stringify(hidden));
+    const restored = await mainCdp.eval('window.legion.island.show()');
+    check('island restores after being hidden', restored && restored.visible === true && restored.enabled === true,
+      JSON.stringify(restored));
+
+    const pages = await targets();
+    const islandPages = pages.filter((t) => /\/island\.html$/.test(t.url));
+    check('only one island window exists', islandPages.length === 1, `${islandPages.length} island page(s)`);
+
+    const mainHealth = await mainCdp.eval(`(async () => {
+      const info = await window.legion.app.info();
+      const state = await window.legion.app.state();
+      return {
+        name: info.name,
+        hasBody: !!document.getElementById('stage'),
+        state: state && state.state,
+        title: document.title
+      };
+    })()`);
+    check('the existing main window still works',
+      mainHealth && mainHealth.name === 'LEGION' && mainHealth.hasBody && !!mainHealth.state,
+      JSON.stringify(mainHealth));
+
+    // Leave the profile as it was found.
+    if (priorIsland) {
+      await mainCdp.eval(`window.legion.config.set({ ui: { island: ${JSON.stringify(priorIsland)} } })`);
+    }
 
     const bad = [...islandCdp.exceptions, ...islandCdp.console];
     check('island renders without errors', bad.length === 0, bad.slice(0, 3).join(' | ') || 'clean');
+    const mainBad = [...mainCdp.exceptions, ...mainCdp.console];
+    check('main shell logs no errors while the island is open', mainBad.length === 0,
+      mainBad.slice(0, 3).join(' | ') || 'clean');
 
     console.log(failures ? `\n${failures} check(s) failed` : '\nall island checks passed');
   } catch (err) {

@@ -27,13 +27,14 @@ const INVOKE_CHANNELS = [
   'system:full', 'shell:showItem', 'shell:openPath',
   'dialog:confirm', 'app:openExternal',
   'island:status', 'island:show', 'island:hide', 'island:toggle',
-  'island:expand', 'island:pin', 'island:command'
+  'island:expand', 'island:pin', 'island:command', 'island:displays',
+  'island:focusInput'
 ];
 
 const EVENT_CHANNELS = [
   'state', 'metrics', 'ai:event', 'tool:confirmation',
   'timer:fired', 'app:ready', 'window:focus', 'ui:open-panel', 'shortcut:activate',
-  'voice:wake', 'voice:captureEnd', 'island:state', 'island:action'
+  'voice:wake', 'voice:captureEnd', 'island:state', 'island:action', 'island:relay'
 ];
 
 /**
@@ -48,7 +49,8 @@ const EVENT_CHANNELS = [
  * show up as garbage strings in a log.
  */
 const SEND_CHANNELS = [
-  'voice:captureChunk'
+  'voice:captureChunk',
+  'island:push'
 ];
 
 const send = {};
@@ -160,12 +162,15 @@ contextBridge.exposeInMainWorld('legion', {
   },
   island: {
     status: invoke['island:status'],
+    displays: invoke['island:displays'],
     show: invoke['island:show'],
     hide: invoke['island:hide'],
     toggle: invoke['island:toggle'],
     expand: invoke['island:expand'],
     pin: invoke['island:pin'],
-    command: invoke['island:command']
+    focusInput: invoke['island:focusInput'],
+    command: invoke['island:command'],
+    relay: send['island:push']
   },
   on
 });
